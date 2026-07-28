@@ -69,7 +69,12 @@ export default function App() {
           }}
           camera={{ position: [30, 20, 44], fov: 34, near: 0.1, far: 500 }}
         >
-          <color attach="background" args={['#0e0e11']} />
+          {/* Pure white studio backdrop, matching jewellery e-commerce
+              convention. Cuts out cleanly against a white page with no visible
+              seam. The stones keep their silhouette because separation comes
+              from the girdle outline and pavilion shadows, not from background
+              contrast. */}
+          <color attach="background" args={['#ffffff']} />
 
           {/* Studio lighting built from Lightformers rather than
               <Environment preset="…">, because the presets fetch a 1k HDRI
@@ -117,12 +122,15 @@ export default function App() {
               <Ring key={profile.id} profile={profile} config={resolved.config} />
             </group>
 
+            {/* Softer and lighter than on the dark backdrop: at 0.45 opacity a
+                contact shadow reads as a grey smudge against near-white. */}
             <ContactShadows
               position={[0, -11.2, 0]}
-              opacity={0.45}
+              opacity={0.22}
               scale={55}
-              blur={2.6}
+              blur={3.2}
               far={20}
+              color="#5a5a62"
             />
           </Suspense>
 

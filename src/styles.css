@@ -36,13 +36,25 @@ body {
   pointer-events: none;
   display: flex; flex-direction: column; gap: 2px;
 }
-.badge strong { font-size: 15px; letter-spacing: .16em; font-weight: 600; }
-.badge span { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+/* The viewport is a light studio backdrop while the panel stays dark, so
+   anything drawn over the canvas needs its own dark-on-light colours rather
+   than the panel's light-on-dark ones. */
+.badge strong {
+  font-size: 15px; letter-spacing: .16em; font-weight: 600;
+  color: #1a1a1f;
+}
+.badge span {
+  font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: #6f6d78;
+}
 
-.loader { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; letter-spacing: .08em; white-space: nowrap; }
+.loader {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  color: #6f6d78; font-size: 12px; letter-spacing: .08em; white-space: nowrap;
+}
 .spinner {
   width: 26px; height: 26px; border-radius: 50%;
-  border: 2px solid #2b2b33; border-top-color: var(--accent);
+  border: 2px solid #dcdbd8; border-top-color: var(--accent);
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
