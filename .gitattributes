@@ -1,0 +1,7 @@
+# Normalise line endings so diffs don't churn between Windows and macOS/Linux.
+* text=auto eol=lf
+
+# Binary — never touch these, and don't try to diff them as text.
+*.glb binary
+*.obj binary
+*.wasm binary

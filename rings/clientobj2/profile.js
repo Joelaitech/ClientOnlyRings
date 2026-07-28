@@ -1,0 +1,172 @@
+/**
+ * RING PROFILE — clientobj2  (source model LR64530)
+ * ============================================================================
+ * Measured facts about ONE ring. Everything here came from measuring the
+ * supplied OBJ files; none of it can be derived from the mesh at runtime.
+ *
+ * Shared maths (US size chart, carat cube-root, metals, the deformer) lives
+ * in core/ and is not repeated per ring.
+ *
+ * To add a ring: copy this file, run `npm run profile <id>` to get the
+ * measurements, fill them in, and register it in rings/index.js.
+ *
+ * COORDINATE SYSTEM (as authored in Rhino — do not rotate on import)
+ * ---------------------------------------------------------------------------
+ *   +Z  = up through the head / centre stone
+ *   +Y  = ring axis (the finger passes along Y); the band is thin in Y
+ *   +X  = left/right across the ring face
+ *
+ * SOURCE FILES  (rings/clientobj2/source/)
+ * ---------------------------------------------------------------------------
+ *   LR64530 S_2193.obj   142 429 v — shank: band, pavé shoulders, 14 melee
+ *   LR64530 H_1136.obj     7 585 v — head: 4 prongs, basket, princess stone
+ *   LR64530_1289.obj     150 014 v — the two FUSED. Not used: the head and
+ *                                    shank must move independently.
+ *
+ *   S + H = the fused file exactly (142429 + 7585 = 150014 vertices). The
+ *   split is lossless and both halves share one world origin, so they load
+ *   with NO transform. That is what makes the ring configurable.
+ */
+
+export default {
+  id: 'clientobj2',
+  sku: 'LR64530',
+  name: 'Princess Solitaire',
+  subtitle: 'Pavé Shoulders',
+  description: '18K · Natural Diamond',
+
+  /** Draco-compressed GLB, served from rings/clientobj2/models/. */
+  models: {
+    shank: 'shank.glb',
+    head: 'head.glb',
+  },
+
+  /**
+   * MEASURED MASTER — what the mesh actually is, before any configuration.
+   * Every transform is expressed relative to these.
+   */
+  master: {
+    /**
+     * Bore centre in model space. NOTE the -0.10 Z offset: this ring is not
+     * modelled on the origin. Every radial transform must use it.
+     */
+    boreCenter: { x: 0, y: 0, z: -0.10 },
+
+    /** Circle-fit over 142k vertices, sd 0.003 mm. */
+    boreRadius: 8.2729,
+
+    /** 16.546 mm ID = US 7 (nominal 16.507; +0.04 is within CAD tolerance). */
+    ringSize: 7.0,
+
+    /** Centre stone as modelled: 5.40 mm princess girdle = exactly 1.00 ct. */
+    carat: 1.0,
+    stoneMM: 5.40,
+
+    /**
+     * Band width (Y span) at the bottom of the shank. The master is not a
+     * constant width — it swells to 2.019 mm at the shoulders, a deliberate
+     * 1.4% taper. Scaling about Y = 0 preserves that proportionally.
+     */
+    shankWidthMM: 1.99,
+
+    /** Band thickness, radial. Constant at every ring size by construction. */
+    thicknessMM: 1.78,
+  },
+
+  centerStone: {
+    cut: 'princess',
+    /** Measured: girdle 5.40 mm, table 3.24 mm, culet Z 10.93, table Z 14.82. */
+    tableMM: 3.24,
+    depthMM: 3.89,
+  },
+
+  /**
+   * Accent stones. Omit this key entirely on a ring with no pavé — the
+   * pavé warnings in core/configure.js then simply do not fire.
+   */
+  accents: {
+    cut: 'round',
+    mm: 1.55,
+    caratEach: 0.0155,
+    count: 14,          // 7 per shoulder
+    /** Measured centre angles from the bore, 0 = side, +90 = head. */
+    anglesDeg: [21.6, 31.4, 41.0, 50.6, 60.1, 69.0, 76.4],
+    /** Above this the bead-work visibly stretches. Drives a warning. */
+    maxCleanWidthMM: 5,
+  },
+
+  head: {
+    /** Culet Z of the master centre stone — the head scales about this. */
+    pivotZ: 10.932,
+
+    /** Where the head meets the shank: basket bottoms at 12.321, shoulders
+     *  top out at 12.444, so the join plane is ~12.38. */
+    seatZ: 12.38,
+
+    /** Extremes of the master head, for clearance checks. */
+    minZ: 9.362,
+    maxZ: 15.491,        // prong tips — highest point of the ring
+
+    /** Head metal footprint across Y. The band overhangs past this. */
+    widthMM: 7.185,
+
+    /** Basket diameter, and the point past which it overhangs a small shank. */
+    basketMM: 8.25,
+    maxBasketMM: 11.0,
+    minSizeForLargeBasket: 6,
+
+    /** At or below this weight the master prongs dominate the stone. */
+    minComfortableCarat: 0.375,
+  },
+
+  /**
+   * Parts to skip at load. object_5 is a coincident duplicate of object_4
+   * (identical bounds X 2.310..3.123, Z 12.209..12.407); rendering both
+   * z-fights on the right shoulder tip.
+   */
+  skipParts: ['object_5'],
+
+  /**
+   * Part map, for reference when debugging. Materials are assigned by the
+   * Diamond_* naming convention, not from this list.
+   *
+   * Group names are NOT unique — "Diamond_Round" appears 14 times. Index by
+   * order of appearance, never by name.
+   */
+  parts: {
+    shank: {
+      metal: [
+        'object_1',   // bottom of band           Z -10.14 .. -7.67
+        'object_2',   // left lower band          X -10.30 .. -3.25
+        'object_3',   // right lower band         X   3.25 .. 10.30
+        'object_4',   // right shoulder tip cap   Z  12.21 .. 12.41
+        'object_5',   // duplicate of object_4 — skipped
+        'object_6',   // right shoulder, full cross-section
+        'object_7',   // left shoulder, full cross-section
+        'object_8',   // left shoulder tip cap
+        'object_9',   // left outer wall
+        'object_10',  // right outer wall
+      ],
+      stones: 'Diamond_Round',
+    },
+    head: {
+      metal: ['object_1', 'object_2', 'object_3', 'object_4', 'object_5'],
+      stones: 'Diamond_Princess',
+    },
+  },
+
+  /**
+   * NOTE FOR FUTURE RINGS — the trap this model set.
+   *
+   * object_6 / object_10 each span the FULL cross-section of the shoulder
+   * (8.40 -> 10.56 mm at 30 deg). They are the left and right halves of the
+   * shank split down the middle, NOT separate inner-rail / outer-wall layers.
+   *
+   * That matters because it rules out any "hold the shoulders still while the
+   * band grows" strategy: at those angles the shoulder IS the finger hole.
+   * Freezing it capped the bore at 8.38 mm — a US 13 ring gauged US 7.3.
+   *
+   * Check this on every new ring before assuming the shoulders are separable.
+   * `npm run profile <id>` reports the per-group radius span per angle.
+   */
+};
