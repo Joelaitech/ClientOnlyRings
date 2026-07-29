@@ -130,6 +130,45 @@ export default {
      */
     scaleFullAtZ: 9.00,
 
+    /**
+     * SHOULDER BEND — close the last joint from the SHANK side.
+     *
+     * At the bottom of the carat range the basket rail (head object_3) shrinks
+     * away from the shoulder tips. Measured rail-to-shoulder gap:
+     *   1.00 ct  0.017 mm      0.25 ct  0.565 mm
+     * Every other head part stays connected at 0.25 ct (0.09-0.16 mm), so this
+     * one contact is the whole problem.
+     *
+     * Fixing it from the head side is what kept breaking the 0.50-3.00 range,
+     * which is otherwise correct. Bending the SHANK instead cannot regress
+     * anything: the head is untouched, and the correction fades to zero above
+     * `belowCarat`.
+     *
+     * Travel was swept against the real mesh at full strength. The straight
+     * point-to-point delta (0.434 in, 0.360 down) undershot, because the tip
+     * has to travel along the rail's curve rather than straight at it:
+     *   in 0.40 down 0.30 -> 0.250 mm      in 0.60 down 0.70 -> 0.039
+     *   in 0.80 down 0.50 -> 0.033         in 0.80 down 0.70 -> 0.023  <- used
+     *
+     * `fromZ` is 9.0. It must sit below the contact at Z 11.67 or the moving
+     * band misses it entirely (at 11.0 the gap did not budge from 0.231 mm).
+     * Going lower than strictly necessary also buys a much smoother curve —
+     * measured shoulder curvature, lower is smoother:
+     *   fromZ 10.2 -> 0.383     fromZ 9.0 -> 0.130     fromZ 6.0 -> 0.320
+     * 9.0 gives the smoothest bend while still closing the joint, and it is
+     * where the shoulders naturally start to rise.
+     *
+     * The bore is unaffected at every setting tried — the weight is zero below
+     * fromZ, so the band, bore and lower pavé never move.
+     */
+    shoulderBend: {
+      belowCarat: 0.50,
+      fromZ: 9.0,
+      tipZ: 12.69,
+      inwardMM: 0.80,
+      downMM: 0.70,
+    },
+
     tableZ: 14.081,
     minZ: 9.081,
     maxZ: 15.118,

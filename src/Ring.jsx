@@ -13,7 +13,7 @@ import * as THREE from 'three';
 
 import { METALS, DIAMOND, CARAT, SHANK_WIDTH } from '../core/standards.js';
 import {
-  deformMetal, deformStoneRigid, deformHead, centroidXZ,
+  deformMetal, deformStoneRigid, deformHead, bendShoulders, centroidXZ,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
@@ -130,6 +130,22 @@ export default function Ring({ profile, config }) {
 
   const boreZ = profile.master.boreCenter.z;
 
+  /**
+   * Shoulder bend strength: 1 at the bottom of the carat range, easing to 0 at
+   * `belowCarat`, so the correction is at full travel exactly where the gap is
+   * widest and there is no visible step as the slider crosses the threshold.
+   *
+   * Interpolated between caratMin and belowCarat rather than from zero — a
+   * fraction of `belowCarat` only reached 0.5 at the minimum and left the
+   * joint 0.39 mm open.
+   */
+  const bend = profile.head.shoulderBend ?? null;
+  const caratFloor = profile.master.caratMin ?? CARAT.MIN;
+  const bendAmount = bend
+    ? Math.max(0, Math.min(1,
+        (bend.belowCarat - carat) / (bend.belowCarat - caratFloor)))
+    : 0;
+
   // --- RING SIZE + WIDTH: deform the shank --------------------------------
   // Runs only when a shank parameter changes, not every frame. Both
   // transforms are applied in one pass from the pristine buffer, so they
@@ -149,10 +165,37 @@ export default function Ring({ profile, config }) {
       } else {
         deformMetal(p.base, target, delta, widthScale, boreZ);
       }
+
+      /**
+       * At small carats the head shrinks away from the shoulder tips, so the
+       * tips are bent in and down to meet it. Applied to the SHANK on purpose —
+       * every attempt to correct this from the head side broke the 0.50-3.00 ct
+       * range. Zero above `belowCarat`.
+       *
+       * Pavé stones get the SAME bend, evaluated once at their centroid so they
+       * translate rigidly. Skipping them left them behind while their seats
+       * moved, and they popped out of the shoulders.
+       */
+      if (bend) {
+        let seatAt = null;
+        if (p.isStone) {
+          // Centroid AFTER the size/width pass, which is where the seat now is.
+          let cx = 0, cy = 0, cz = 0;
+          const n = target.length / 3;
+          for (let i = 0; i < target.length; i += 3) {
+            cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
+          }
+          seatAt = { x: cx / n, y: cy / n, z: cz / n };
+        }
+        bendShoulders(
+          target, bendAmount, bend.fromZ + delta, bend.tipZ + delta,
+          bend.inwardMM, bend.downMM, seatAt
+        );
+      }
       attr.needsUpdate = true;
       p.geometry.computeBoundingSphere();
     }
-  }, [shankParts, ringSize, shankWidth, profile, boreZ]);
+  }, [shankParts, ringSize, shankWidth, profile, boreZ, bend, bendAmount]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**

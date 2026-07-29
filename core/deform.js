@@ -135,6 +135,89 @@ export function deformHead(base, target, scale, seatZ, fullAtZ) {
   }
 }
 
+/**
+ * Bend the shoulder tips in and down to meet a small head.
+ * ---------------------------------------------------------------------------
+ * At the bottom of the carat range a uniformly-scaled head is both narrower
+ * and shorter than the shoulders it sits between, so the tips no longer reach
+ * it. On the pear at 0.25 ct the basket rail lands at Z 10.76-11.33 / |X| <=
+ * 1.70 while the tips are at Z 11.96-12.96 / |X| 2.05-3.68.
+ *
+ * Every attempt to fix this from the HEAD side broke the 0.50-3.00 range,
+ * which is otherwise correct. Moving the SHANK instead is strictly safer: the
+ * head is untouched, so nothing that already works can regress, and the
+ * correction is zero above `belowCarat`.
+ *
+ * The bend is weighted by height (`fromZ` -> the tip), so the band, the bore
+ * and the pave all stay exactly where they were — only the last couple of
+ * millimetres of shoulder move.
+ *
+ * @param {Float32Array} target buffer to modify IN PLACE (already size/width deformed)
+ * @param {number} amount   0..1 blend of the full correction (0 = no bend)
+ * @param {number} fromZ    height where the bend starts easing in
+ * @param {number} tipZ     height of the tips, where it reaches full strength
+ * @param {number} inwardMM how far the tip moves toward the ring axis
+ * @param {number} downMM   how far the tip drops
+ */
+export function bendShoulders(
+  target, amount, fromZ, tipZ, inwardMM, downMM, rigidAt = null
+) {
+  if (amount <= 0) return;
+  const span = tipZ - fromZ;
+  if (span <= 0) return;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  /**
+   * A pavé stone must travel with its seat but never deform: bending it would
+   * squash the girdle. So when `rigidAt` is supplied — the stone's centroid —
+   * the weight is evaluated ONCE there and the whole stone is translated by
+   * that single offset.
+   *
+   * Without this the stones stayed put while the metal around them moved, and
+   * they visibly popped out of the shoulders.
+   */
+  if (rigidAt) {
+    const z = rigidAt.z;
+    if (z <= fromZ) return;
+    const w = smoothstep(Math.min(1, (z - fromZ) / span)) * amount;
+    if (w === 0) return;
+
+    const r = Math.hypot(rigidAt.x, rigidAt.y);
+    const pull = r > 1e-6 ? (inwardMM * w) / r : 0;
+    const dx = -rigidAt.x * pull;
+    const dy = -rigidAt.y * pull;
+    const dz = -downMM * w;
+
+    for (let i = 0; i < target.length; i += 3) {
+      target[i] += dx;
+      target[i + 1] += dy;
+      target[i + 2] += dz;
+    }
+    return;
+  }
+
+  for (let i = 0; i < target.length; i += 3) {
+    const z = target[i + 2];
+    if (z <= fromZ) continue;
+
+    const w = smoothstep(Math.min(1, (z - fromZ) / span)) * amount;
+    if (w === 0) continue;
+
+    // Move toward the ring axis in the ring-face plane. Scaling rather than
+    // translating keeps the two shoulders symmetric without needing to know
+    // which side a vertex is on.
+    const x = target[i];
+    const y = target[i + 1];
+    const r = Math.hypot(x, y);
+    if (r > 1e-6) {
+      const pull = (inwardMM * w) / r;
+      target[i] = x - x * pull;
+      target[i + 1] = y - y * pull;
+    }
+    target[i + 2] = z - downMM * w;
+  }
+}
+
 /** Centroid of a position buffer, in the XZ plane. */
 export function centroidXZ(pos) {
   let sx = 0;
