@@ -93,6 +93,23 @@ export default {
      * the one with the smallest worst-case joint gap over 0.25-1.00 ct.
      */
     scaleFullAtZ: 9.50,
+    /**
+     * Opt-in for the shank pillar/accent carat-bend (see bendPillarToHead
+     * and bendStoneToHead in core/deform.js, wired in src/Ring.jsx). Only
+     * this ring sets it — the other profiles get no bend at all, same as
+     * before this feature existed.
+     */
+    pillarBend: true,
+    /**
+     * The pillars' contact point with the head must land exactly at
+     * scaleFullAtZ (see bendPillarToHead in core/deform.js), but easing that
+     * over just seatZ..scaleFullAtZ (0.5 mm) reads as a hinge, not a bend —
+     * measured Z 0.63-13.06 on the pillar meshes (object_8/object_9), so
+     * there is plenty of shoulder to sweep the curve across instead.
+     */
+    pillarBendZ: 6.5,
+    /** Outward bow at the bend's midpoint, at the minimum carat. */
+    pillarBulgeMM: 0.5,
     tableZ: 14.594,
     minZ: 8.961,
     maxZ: 15.468,
