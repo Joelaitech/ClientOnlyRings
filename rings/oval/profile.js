@@ -114,6 +114,41 @@ export default {
      * the one with the smallest worst-case joint gap over 0.25-1.00 ct.
      */
     scaleFullAtZ: 10.50,
+
+    /**
+     * SHOULDER BEND — close the last joint from the SHANK side.
+     *
+     * Same failure as the pear: at the bottom of the range the basket rail
+     * (head object_3) shrinks away from the shoulder it sits against (shank
+     * object_5). Measured rail-to-shoulder gap:
+     *   1.50 ct (master)  0.028 mm
+     *   0.50 ct           0.029 mm   <- already fine, no correction needed
+     *   0.25 ct           0.630 mm   <- the only break
+     *
+     * Every other head part is either permanently joined (object_1/5/8/9, all
+     * 0.007-0.043 mm across the range) or never touches the shank at all
+     * (object_2/4/6/7, 0.25-0.30 mm even at master). So this one contact is the
+     * whole problem — the same conclusion as the pear.
+     *
+     * Travel swept against the real mesh at full strength; the straight-line
+     * delta (0.396 in, 0.490 down) undershoots because the tip travels along
+     * the rail's curve:
+     *   in 0.40 down 0.50 -> 0.174 mm     in 0.60 down 0.50 -> 0.110
+     *   in 0.80 down 0.70 -> 0.011        in 0.60 down 0.70 -> 0.0095  <- used
+     *
+     * fromZ 10.5 rather than lower: at 9.5 the curvature jumps to 1.25 (versus
+     * 0.34 here) because the bend starts inside the gallery, which is stiffer
+     * than the pear's open shoulder. Bore measured unchanged at 8.310 mm for
+     * every setting tried.
+     */
+    shoulderBend: {
+      belowCarat: 0.50,
+      fromZ: 10.5,
+      tipZ: 13.58,
+      inwardMM: 0.60,
+      downMM: 0.70,
+    },
+
     tableZ: 15.251,
     minZ: 9.655,
     maxZ: 15.628,

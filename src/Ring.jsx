@@ -129,6 +129,9 @@ export default function Ring({ profile, config }) {
   }, [shankParts, headParts]);
 
   const boreZ = profile.master.boreCenter.z;
+  const axisY = profile.master.boreCenter.y ?? 0;
+  /** Radial offset for the selected ring size, shared by shank and head. */
+  const delta = radialDelta(ringSize, profile);
 
   /**
    * Shoulder bend strength: 1 at the bottom of the carat range, easing to 0 at
@@ -151,7 +154,6 @@ export default function Ring({ profile, config }) {
   // transforms are applied in one pass from the pristine buffer, so they
   // compose without accumulating error.
   useLayoutEffect(() => {
-    const delta = radialDelta(ringSize, profile);
     const widthScale = SHANK_WIDTH.scale(shankWidth, profile.master.shankWidthMM);
 
     for (const p of shankParts) {
@@ -195,7 +197,7 @@ export default function Ring({ profile, config }) {
       attr.needsUpdate = true;
       p.geometry.computeBoundingSphere();
     }
-  }, [shankParts, ringSize, shankWidth, profile, boreZ, bend, bendAmount]);
+  }, [shankParts, delta, shankWidth, profile, boreZ, axisY, bend, bendAmount]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**
@@ -215,14 +217,29 @@ export default function Ring({ profile, config }) {
 
     for (const p of headParts) {
       const attr = p.geometry.attributes.position;
-      deformHead(p.base, attr.array, s, seat, full);
+      const target = attr.array;
+      deformHead(p.base, target, s, seat, full);
+
+      /**
+       * RING SIZE: expand the head radially, the same way the shank is expanded.
+       *
+       * The head used to ride out on a rigid +Z group translation. But the shank
+       * expands RADIALLY — a shoulder vertex moves in X as well as Z — so the
+       * two diverged sideways as the ring grew. Measured on the oval shoulder
+       * contact at (2.14, 12.51): at US 13 the shank moved 0.460 mm outward in X
+       * while the head only moved up, which is exactly the 0.44 mm joint gap
+       * that appeared at US 9-13 in the 0.25-0.75 ct range.
+       *
+       * Applying the same radial offset here keeps the two locked together at
+       * every size. Band thickness and stone size are unaffected: the offset is
+       * a fixed distance along each vertex's own radius, not a scale.
+       */
+      deformMetal(target, target, delta, 1, boreZ, axisY);
+
       attr.needsUpdate = true;
       p.geometry.computeBoundingSphere();
     }
-  }, [headParts, carat, profile]);
-
-  /** The head rides outward with ring size, as a rigid group. */
-  const headZ = radialDelta(ringSize, profile);
+  }, [headParts, carat, profile, delta, boreZ, axisY]);
 
   return (
     <group>
@@ -238,7 +255,7 @@ export default function Ring({ profile, config }) {
         ))}
       </group>
 
-      <group position={[0, 0, headZ]}>
+      <group>
         {headParts.map((p, i) => (
           <mesh
             key={`h${i}`}
