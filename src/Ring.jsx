@@ -5,7 +5,7 @@
  * it. Adding a ring means adding a profile, not editing this file.
  */
 
-import React, { useMemo, useLayoutEffect } from 'react';
+import React, { useMemo, useEffect, useLayoutEffect } from 'react';
 import { useLoader } from '@react-three/fiber';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
@@ -71,7 +71,20 @@ function prepare(obj, skip) {
     const name = child.name || '';
     if (skip?.includes(name)) return;
 
-    const geom = child.geometry;
+    /**
+     * DEEP-COPY THE GEOMETRY. This is not optional.
+     *
+     * useLoader caches the parsed GLTF by URL, and Object3D.clone(true) copies
+     * the node tree but SHARES BufferGeometry with the original. So switching
+     * away from a ring and back handed us the same buffers we had already
+     * deformed: `base` was captured from deformed vertices, the transform was
+     * applied on top of itself, and the error compounded on every round-trip —
+     * the head visibly climbing away from the shank a little more each time.
+     *
+     * geometry.clone() gives this mount its own attribute arrays, so `base` is
+     * always the pristine mesh.
+     */
+    const geom = child.geometry.clone();
     // Rhino already wrote smoothed per-vertex normals — do NOT recompute,
     // it destroys the hard girdle edges on the diamonds.
     const pos = geom.attributes.position;
@@ -94,16 +107,26 @@ export default function Ring({ profile, config }) {
 
   const { metal: metalMat, diamond: diamondMat } = useMaterials(metal);
 
-  // Clone so StrictMode's double-invoke and hot reload don't share buffers,
-  // and so switching rings cannot leak geometry between profiles.
+  // prepare() deep-copies each geometry, so this mount never writes into the
+  // buffers useLoader has cached — see the note there.
   const shankParts = useMemo(
-    () => prepare(shankGltf.scene.clone(true), profile.skipParts),
-    [shankGltf, profile]
+    () => prepare(shankGltf.scene, profile.skipParts),
+    [shankGltf, profile.skipParts]
   );
   const headParts = useMemo(
-    () => prepare(headGltf.scene.clone(true)),
+    () => prepare(headGltf.scene),
     [headGltf]
   );
+
+  /**
+   * These geometries are clones this component owns, so it must free them.
+   * Without this, every ring switch would leak a full set of GPU buffers —
+   * ~190k vertices for the emerald shank alone.
+   */
+  useEffect(() => () => {
+    for (const p of shankParts) p.geometry.dispose();
+    for (const p of headParts) p.geometry.dispose();
+  }, [shankParts, headParts]);
 
   const boreZ = profile.master.boreCenter.z;
 
@@ -149,8 +172,6 @@ export default function Ring({ profile, config }) {
 
     for (const p of headParts) {
       const attr = p.geometry.attributes.position;
-      // Stones get the true carat scale; only METAL is floored, so a small
-      // stone still renders small while its setting keeps reaching the claws.
       deformHead(p.base, attr.array, s, seat, full);
       attr.needsUpdate = true;
       p.geometry.computeBoundingSphere();
