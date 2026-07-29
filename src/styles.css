@@ -112,6 +112,29 @@ input[type=range]::-moz-range-thumb {
 }
 .picker:hover { border-color: #3e3e49; }
 
+/* option chips — diamond shape, side stones */
+.chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip {
+  flex: 1 1 auto;
+  min-width: 62px;
+  background: #1e1e25;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.chip:hover { border-color: #3e3e49; color: var(--text); }
+.chip.on {
+  border-color: var(--accent);
+  color: #1a1a1f;
+  background: var(--accent);
+  font-weight: 500;
+}
+
 /* metal swatches */
 .metals { display: flex; gap: 12px; }
 .swatch {

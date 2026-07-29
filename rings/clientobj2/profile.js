@@ -96,12 +96,30 @@ export default {
   },
 
   head: {
-    /** Culet Z of the master centre stone — the head scales about this. */
+    /** Culet of the centre stone. Kept for reference; see seatZ. */
     pivotZ: 10.932,
-
-    /** Where the head meets the shank: basket bottoms at 12.321, shoulders
-     *  top out at 12.444, so the join plane is ~12.38. */
-    seatZ: 12.38,
+    /**
+     * SEAT — the Z plane where this head's metal actually meets the shoulders,
+     * measured as the height of closest XY approach between the two meshes.
+     *
+     * Carat scaling pivots HERE, not on the culet. Pivoting on the culet let
+     * the seat drop by up to 0.95 mm as the head shrank, which opened the joint
+     * and let the shoulders arch over the head at low carat.
+     *
+     * Supersedes an earlier 12.38 estimate taken from where the basket bottoms
+     * out against the shoulder tips. The shoulders actually wrap up alongside
+     * the head, so the two meshes first touch much lower, at 9.25.
+     */
+    seatZ: 9.25,
+    /**
+     * Height at which the head's XY scaling reaches full strength.
+     *
+     * Below the seat the footprint stays at master width so the head remains
+     * welded to the shoulders; above this it scales fully so the claws and
+     * stone shrink properly. Chosen by sweeping candidate heights and taking
+     * the one with the smallest worst-case joint gap over 0.25-1.00 ct.
+     */
+    scaleFullAtZ: 9.75,
 
     /** Extremes of the master head, for clearance checks. */
     minZ: 9.362,

@@ -25,6 +25,10 @@ export default function Controls({
   profile, rings, onSelectRing, config, resolved, warnings, onChange,
 }) {
   const { ringSize, carat, shankWidth, metal } = config;
+
+  /** Per-ring carat bounds, falling back to the catalogue range. */
+  const caratMin = profile.master.caratMin ?? CARAT.MIN;
+  const caratMax = profile.master.caratMax ?? CARAT.MAX;
   const master = profile.master;
 
   return (
@@ -109,22 +113,25 @@ export default function Controls({
         </div>
       </Row>
 
-      {/* ---- CARAT ---- */}
+      {/* ---- CARAT ----
+           Bounds are per-ring: an elongated stone or a heavy master mount
+           cannot span the full catalogue range without the head detaching or
+           the stone cantilevering off the band. See the profiles. */}
       <Row label="Center Stone" value={`${carat.toFixed(2)} ct`}>
         <input
           type="range"
-          min={CARAT.MIN}
-          max={CARAT.MAX}
+          min={caratMin}
+          max={caratMax}
           step={CARAT.STEP}
           value={carat}
           onChange={(e) => onChange({ carat: parseFloat(e.target.value) })}
         />
         <div className="scale">
-          <span>{CARAT.MIN} ct</span>
+          <span>{caratMin} ct</span>
           <span className="mid">
             {resolved.stone.cut} · {resolved.stone.mm.toFixed(2)} mm
           </span>
-          <span>{CARAT.MAX} ct</span>
+          <span>{caratMax} ct</span>
         </div>
       </Row>
 
@@ -149,10 +156,25 @@ export default function Controls({
 
           {resolved.accents && (
             <>
-              <dt>Accent stones</dt>
+              <dt>Side stones</dt>
               <dd>
-                {resolved.accents.count} × {resolved.accents.mm} mm{' '}
-                {resolved.accents.cut} · {resolved.accents.totalCarat.toFixed(2)} ct
+                {resolved.accents.perSide
+                  ? `${resolved.accents.perSide} per side · `
+                  : `${resolved.accents.count} × `}
+                {resolved.accents.mm} mm ·{' '}
+                {resolved.accents.totalCarat.toFixed(2)} ct
+              </dd>
+            </>
+          )}
+
+          {/* Only the oval carries these — decorative accents under the head,
+              counted apart from the side stones so the totals stay honest. */}
+          {resolved.gallery && (
+            <>
+              <dt>Gallery accents</dt>
+              <dd>
+                {resolved.gallery.count} × {resolved.gallery.sizes.join('/')} mm ·{' '}
+                {resolved.gallery.totalCarat.toFixed(2)} ct
               </dd>
             </>
           )}

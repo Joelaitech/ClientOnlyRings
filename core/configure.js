@@ -36,9 +36,15 @@ export function normalizeConfig(cfg, profile) {
     ringSize: snapOrMaster(
       cfg.ringSize ?? m.ringSize, m.ringSize,
       RING_SIZE.MIN, RING_SIZE.MAX, RING_SIZE.STEP),
+    /**
+     * Carat bounds are per-ring where the profile states them. An elongated
+     * stone or a heavy master mount cannot span the full catalogue range
+     * without the head detaching from the shoulders or the stone cantilevering
+     * off the band — see caratMin/caratMax notes in the ring profiles.
+     */
     carat: snapOrMaster(
       cfg.carat ?? m.carat, m.carat,
-      CARAT.MIN, CARAT.MAX, CARAT.STEP),
+      m.caratMin ?? CARAT.MIN, m.caratMax ?? CARAT.MAX, CARAT.STEP),
     shankWidth: snapOrMaster(
       cfg.shankWidth ?? m.shankWidthMM, m.shankWidthMM,
       SHANK_WIDTH.MIN, SHANK_WIDTH.MAX, SHANK_WIDTH.STEP),
@@ -54,14 +60,26 @@ export function radialDelta(usSize, profile) {
 /**
  * Transform for the head group: uniform scale plus a translation.
  *
- * The head scales about the centre stone's CULET, not the world origin and
- * not the stone's centroid. That keeps the head planted on its seat while the
- * stone grows upward — how a real head is re-cut for a larger stone. It then
- * rides the shoulders up or down with ring size.
+ * PIVOT ABOUT THE SEAT, NOT THE CULET.
+ *
+ * An earlier version pivoted on the centre stone's culet, on the reasoning
+ * that a real head is re-cut about the stone. Geometrically that is wrong for
+ * this assembly: everything above the culet contracts toward it as the head
+ * shrinks, so the head's SEAT — the plane where its metal meets the shoulders —
+ * drops by (1 - scale) x (seatZ - culetZ). Measured, that is 0.56-0.95 mm at
+ * 0.25 ct, which is exactly what made the shoulders arch over the head and the
+ * claws float inside the shoulder V.
+ *
+ * Pivoting on the seat instead keeps that plane fixed at every carat, so the
+ * joint never opens. The stone still grows upward and outward from the seat,
+ * which is the visually correct behaviour.
+ *
+ * `seatZ` defaults to the shank's top when a profile does not state one, since
+ * that is where the two parts meet.
  */
 export function headTransform(carat, usSize, profile) {
   const s = CARAT.scale(carat, profile.master.carat);
-  const pivot = profile.head.pivotZ;
+  const pivot = profile.head.seatZ ?? profile.head.pivotZ;
   return {
     scale: s,
     position: { x: 0, y: 0, z: (1 - s) * pivot + radialDelta(usSize, profile) },
@@ -95,8 +113,16 @@ export function resolve(cfg, profile) {
           totalCarat: +(accents.count * accents.caratEach).toFixed(3),
         }
       : null,
+    /**
+     * Decorative accents that are not side stones (the oval's under-head
+     * gallery). Reported separately so "side stones" stays an honest count,
+     * but still added into the total carat below.
+     */
+    gallery: profile.galleryAccents ?? null,
     totalCarat: +(
-      c.carat + (accents ? accents.count * accents.caratEach : 0)
+      c.carat
+      + (accents ? accents.count * accents.caratEach : 0)
+      + (profile.galleryAccents?.totalCarat ?? 0)
     ).toFixed(3),
     material: METALS[c.metal],
   };

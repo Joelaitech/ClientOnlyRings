@@ -86,6 +86,55 @@ export function deformStoneRigid(base, target, centroid, delta, boreCenterZ = 0)
   }
 }
 
+/**
+ * Scale a HEAD for carat while keeping its base welded to the shoulders.
+ *
+ * WHY A PLAIN GROUP SCALE IS NOT ENOUGH
+ * ---------------------------------------------------------------------------
+ * Scaling the head group uniformly shrinks its FOOTPRINT as well as its stone.
+ * Measured on the pear ring at 0.25 ct, the head's contact face pulled 0.50 mm
+ * inward in X and the joint visibly opened — and no vertical offset can close
+ * that, because the gap is horizontal (0.6 mm of travel recovered only 0.10 mm).
+ *
+ * So the scale is blended by HEIGHT ABOVE THE SEAT:
+ *   - at and below the seat, XY stays at master width, so the base keeps
+ *     touching the shoulders exactly as modelled;
+ *   - above `fullAtZ`, XY scales fully, so the claws and stone shrink properly;
+ *   - Z always scales fully about the seat, so overall proportions hold.
+ *
+ * The result reads as a head re-cut for a smaller stone rather than a shrunken
+ * copy of the whole assembly — which is what a bench jeweller actually does.
+ *
+ * @param {Float32Array} base   pristine head positions
+ * @param {Float32Array} target buffer to write into
+ * @param {number} scale        carat linear scale (1 = master)
+ * @param {number} seatZ        the plane where head metal meets the shoulders
+ * @param {number} fullAtZ      height at which XY scaling reaches full strength
+ */
+export function deformHead(base, target, scale, seatZ, fullAtZ) {
+  const span = fullAtZ - seatZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  for (let i = 0; i < base.length; i += 3) {
+    const x = base[i];
+    const y = base[i + 1];
+    const z = base[i + 2];
+
+    // Z: full scale about the seat, so the seat plane is invariant.
+    target[i + 2] = seatZ + (z - seatZ) * scale;
+
+    // XY: ramp from master width at the seat to full scale higher up.
+    let w;
+    if (span <= 0 || z >= fullAtZ) w = 1;
+    else if (z <= seatZ) w = 0;
+    else w = smoothstep((z - seatZ) / span);
+
+    const s = 1 + (scale - 1) * w;
+    target[i] = x * s;
+    target[i + 1] = y * s;
+  }
+}
+
 /** Centroid of a position buffer, in the XZ plane. */
 export function centroidXZ(pos) {
   let sx = 0;

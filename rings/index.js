@@ -13,9 +13,15 @@
  */
 
 import clientobj2 from './clientobj2/profile.js';
+import pear from './pear/profile.js';
+import emerald from './emerald/profile.js';
+import oval from './oval/profile.js';
 
 export const RINGS = {
   [clientobj2.id]: clientobj2,
+  [pear.id]: pear,
+  [emerald.id]: emerald,
+  [oval.id]: oval,
 };
 
 /** Ordered list, for a picker UI. */

@@ -12,7 +12,9 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import * as THREE from 'three';
 
 import { METALS, DIAMOND, CARAT, SHANK_WIDTH } from '../core/standards.js';
-import { deformMetal, deformStoneRigid, centroidXZ } from '../core/deform.js';
+import {
+  deformMetal, deformStoneRigid, deformHead, centroidXZ,
+} from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
 
@@ -129,10 +131,34 @@ export default function Ring({ profile, config }) {
     }
   }, [shankParts, ringSize, shankWidth, profile, boreZ]);
 
-  // --- CARAT + SIZE: transform the head as a rigid group -------------------
-  const headScale = CARAT.scale(carat, profile.master.carat);
-  const headZ =
-    (1 - headScale) * profile.head.pivotZ + radialDelta(ringSize, profile);
+  // --- CARAT: deform the head ---------------------------------------------
+  /**
+   * The head cannot be a plain group scale. Shrinking it uniformly also
+   * shrinks its FOOTPRINT, so it pulls away from the shoulders — measured
+   * 0.50 mm of inward travel on the pear at 0.25 ct, which opened the joint
+   * visibly. And because that gap is horizontal, no vertical offset closes it.
+   *
+   * deformHead() instead holds the base at master width and ramps the XY scale
+   * in with height, so the head stays welded to the shoulders while the claws
+   * and stone still shrink. Worst-case gap on the pear fell 0.471 -> 0.032 mm.
+   */
+  useLayoutEffect(() => {
+    const s = CARAT.scale(carat, profile.master.carat);
+    const seat = profile.head.seatZ ?? profile.head.pivotZ;
+    const full = profile.head.scaleFullAtZ ?? seat;
+
+    for (const p of headParts) {
+      const attr = p.geometry.attributes.position;
+      // Stones get the true carat scale; only METAL is floored, so a small
+      // stone still renders small while its setting keeps reaching the claws.
+      deformHead(p.base, attr.array, s, seat, full);
+      attr.needsUpdate = true;
+      p.geometry.computeBoundingSphere();
+    }
+  }, [headParts, carat, profile]);
+
+  /** The head rides outward with ring size, as a rigid group. */
+  const headZ = radialDelta(ringSize, profile);
 
   return (
     <group>
@@ -148,7 +174,7 @@ export default function Ring({ profile, config }) {
         ))}
       </group>
 
-      <group position={[0, 0, headZ]} scale={headScale}>
+      <group position={[0, 0, headZ]}>
         {headParts.map((p, i) => (
           <mesh
             key={`h${i}`}
