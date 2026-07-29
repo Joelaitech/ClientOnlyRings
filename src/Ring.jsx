@@ -13,7 +13,8 @@ import * as THREE from 'three';
 
 import { METALS, DIAMOND, CARAT, SHANK_WIDTH } from '../core/standards.js';
 import {
-  deformMetal, deformStoneRigid, deformHead, bendShoulders, centroidXZ,
+  deformMetal, deformStoneRigid, deformHead,
+  bendShoulders, bendPillarToHead, bendStoneToHead, centroidXZ,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
@@ -155,6 +156,25 @@ export default function Ring({ profile, config }) {
   // compose without accumulating error.
   useLayoutEffect(() => {
     const widthScale = SHANK_WIDTH.scale(shankWidth, profile.master.shankWidthMM);
+    const caratScale = CARAT.scale(carat, profile.master.carat);
+    const seat = profile.head.seatZ ?? profile.head.pivotZ;
+    const full = profile.head.scaleFullAtZ ?? seat;
+    /**
+     * The pillar bend is an explicit opt-in (profile.head.pillarBend), not a
+     * blanket behaviour for every ring. Only the emerald profile sets it —
+     * the other three never asked for their shanks to react to carat at all,
+     * and enabling it unconditionally would move their shoulder/accent
+     * geometry near the seat even with bendFromZ/bulgeMM left at defaults.
+     *
+     * It also only fires at the smallest carat (CARAT.MIN = 0.25) — every
+     * other value, including the 1.00 ct master, keeps the plain rigid
+     * shank exactly as it rendered before this feature existed. The bend
+     * was tuned to look right at the one carat where the head shrinks the
+     * most; interpolating it across the whole slider was never asked for.
+     */
+    const pillarBend = profile.head.pillarBend === true && carat <= CARAT.MIN + 1e-6;
+    const bendFromZ = profile.head.pillarBendZ ?? seat;
+    const bulgeMM = profile.head.pillarBulgeMM ?? 0;
 
     for (const p of shankParts) {
       const attr = p.geometry.attributes.position;
@@ -164,8 +184,20 @@ export default function Ring({ profile, config }) {
         // Stones ignore widthScale — they keep their size and stay centred
         // on Y = 0 however wide the band gets.
         deformStoneRigid(p.base, target, p.centroid, delta, boreZ);
+        if (pillarBend) {
+          // Accents above the seat (the topmost pavé, nearest the head) ride
+          // with the head's carat scale too, so they stay flush against the
+          // shoulder metal instead of floating once it bends inward.
+          bendStoneToHead(target, p.centroid, seat, full, caratScale, bendFromZ, bulgeMM);
+        }
       } else {
         deformMetal(p.base, target, delta, widthScale, boreZ);
+        if (pillarBend) {
+          // Shank metal above the seat — the pillars and the claws that carry
+          // the topmost accents — bends with carat so it keeps meeting the
+          // head instead of holding still while the head shrinks around it.
+          bendPillarToHead(p.base, target, seat, full, caratScale, bendFromZ, bulgeMM);
+        }
       }
 
       /**
@@ -197,7 +229,8 @@ export default function Ring({ profile, config }) {
       attr.needsUpdate = true;
       p.geometry.computeBoundingSphere();
     }
-  }, [shankParts, delta, shankWidth, profile, boreZ, axisY, bend, bendAmount]);
+  }, [shankParts, delta, shankWidth, carat, profile, boreZ, axisY,
+      bend, bendAmount]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**
