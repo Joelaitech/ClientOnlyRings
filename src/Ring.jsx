@@ -296,44 +296,52 @@ export default function Ring({ profile, config }) {
       ? CARAT.scale(Math.max(carat, freezeFloor), profile.master.carat)
       : s;
 
+    /**
+     * RING SIZE: move the WHOLE HEAD as one rigid offset, not per-vertex.
+     * ---------------------------------------------------------------------
+     * The head used to ride out on a rigid +Z group translation. But the
+     * shank expands RADIALLY — a shoulder vertex moves in X as well as Z —
+     * so the two diverged sideways as the ring grew. Measured on the oval
+     * shoulder contact at (2.14, 12.51): at US 13 the shank moved 0.460 mm
+     * outward in X while the head only moved up, a 0.44 mm joint gap at
+     * US 9-13 in the 0.25-0.75 ct range.
+     *
+     * The fix after that (deformMetal per vertex, matching the shank) closed
+     * that gap but introduced a NEW problem: deformMetal pushes each vertex a
+     * fixed distance along ITS OWN radius, which only preserves shape for
+     * something radially thin like the shank band. Anything in the head with
+     * real width — the centre stone, but also the prong/basket metal — has
+     * vertices at slightly different radii picking up slightly different
+     * push directions, fanning it out. Measured on a 4 mm-wide stone: a
+     * US 3->13 delta of 3 mm stretched it to 5.0 mm, a 25% "growing diamond"
+     * — and the same radial-fan math applies to the prongs and basket too,
+     * just less visibly since metal doesn't have sharp facet edges to
+     * measure against.
+     *
+     * So the head now gets ONE offset, computed once from where it actually
+     * attaches to the shoulder (X=0, Z=seatZ — the plane seatZ is defined to
+     * be), and every vertex of every part — metal AND stone — is translated
+     * by that exact same (ox, oz). That is a true rigid-body move: nothing
+     * in the head can stretch relative to anything else in it, by
+     * construction, while the attachment point still tracks the shoulder's
+     * own radial direction exactly (it IS the point the offset is computed
+     * from), so the joint-gap fix above is preserved, not reopened.
+     */
+    const seatDX = 0;
+    const seatDZ = seat - boreZ;
+    const seatR = Math.hypot(seatDX, seatDZ);
+    const headOX = seatR > 1e-6 ? (seatDX / seatR) * delta : 0;
+    const headOZ = seatR > 1e-6 ? (seatDZ / seatR) * delta : 0;
+
     for (const p of headParts) {
       const attr = p.geometry.attributes.position;
       const target = attr.array;
       const partScale = freezeParts.includes(p.name) ? sFrozen : s;
       deformHead(p.base, target, partScale, seat, full, liftMM);
 
-      /**
-       * RING SIZE: expand the head radially, the same way the shank is expanded.
-       *
-       * The head used to ride out on a rigid +Z group translation. But the shank
-       * expands RADIALLY — a shoulder vertex moves in X as well as Z — so the
-       * two diverged sideways as the ring grew. Measured on the oval shoulder
-       * contact at (2.14, 12.51): at US 13 the shank moved 0.460 mm outward in X
-       * while the head only moved up, which is exactly the 0.44 mm joint gap
-       * that appeared at US 9-13 in the 0.25-0.75 ct range.
-       *
-       * Applying the same radial offset here keeps the two locked together at
-       * every size — for METAL. deformMetal pushes each vertex a fixed distance
-       * along ITS OWN radius, which is only shape-preserving for something
-       * radially thin like the shank band. The centre stone has real width, so
-       * two vertices on opposite edges sit at slightly different radii and get
-       * pushed along slightly different directions — measured on a 4 mm-wide
-       * stone, a US 3->13 delta of 3 mm fanned it out to 5.0 mm, a 25% stretch,
-       * which is exactly the "head elongates with ring size" report on the
-       * clientobj2 (LR64530) ring. Stones instead get ONE offset computed from
-       * their own (post-deformHead) centroid and translated rigidly — same
-       * fix the shank's accent stones already use, just computed after carat
-       * scaling here since the centre stone's centroid moves with carat.
-       */
-      if (p.isStone) {
-        let cx = 0, cy = 0, cz = 0;
-        const n = target.length / 3;
-        for (let i = 0; i < target.length; i += 3) {
-          cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
-        }
-        deformStoneRigid(target, target, { x: cx / n, z: cz / n }, delta, boreZ);
-      } else {
-        deformMetal(target, target, delta, 1, boreZ);
+      for (let i = 0; i < target.length; i += 3) {
+        target[i] += headOX;
+        target[i + 2] += headOZ;
       }
 
       attr.needsUpdate = true;
