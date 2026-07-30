@@ -128,6 +128,27 @@ export default {
     liftMM: 0.9,
 
     /**
+     * FREEZE THE STEM PLATE BELOW 0.50 CT.
+     * ---------------------------------------------------------------------
+     * object_1/5/8/9 together form the squarish post that drops from the
+     * seat into the gallery (Z 9.66-11.19 — measured per-quadrant, X/Y up to
+     * 1.18/1.62). That single visual "plate" straddles BOTH of deformHead's
+     * internal boundaries at once (seatZ 10.00 and scaleFullAtZ 10.50), so
+     * part of it sits frozen, part ramps, and part gets full scale + lift —
+     * three different rates of change inside one piece. That was fine at
+     * 0.50 ct (small differences), but continuing to shrink it down to
+     * 0.25 ct pulled those sub-regions apart fast enough to visibly "chip"
+     * the block apart right where it meets the band.
+     *
+     * freezeBelowCarat holds this piece at EXACTLY its 0.50 ct shape for any
+     * carat below that — it simply stops changing instead of continuing to
+     * split. Every other head part (the claws, the stone) keeps scaling
+     * normally all the way to 0.25 ct; only this plate is exempted.
+     */
+    freezeParts: ['object_1', 'object_5', 'object_8', 'object_9'],
+    freezeBelowCarat: 0.50,
+
+    /**
      * SHOULDER HINGE — close the last joint from the SHANK side, as a RIGID
      * rotation rather than a curve (see rotateShoulderTip in core/deform.js).
      *
@@ -167,12 +188,27 @@ export default {
      * Z 9.0 pivot (the shorter arm from the higher pivot barely affects the
      * result) — the same rigid swing, just guaranteed not to touch the
      * gallery.
+     *
+     * excludeParts: object_49 is a curved bridge under the gallery that
+     * CROSSES the centre line (X -1.27 to 1.27), reaching up to Z 9.768 —
+     * just above pivotZ. rotateShoulderTip picks rotation direction from
+     * each vertex's own sign(x), so the sliver of object_49 above the pivot
+     * got mirrored rotations on either side of X=0 at once, folding a single
+     * continuous curved surface in half right down its middle — the curved
+     * top-to-bottom "crack" through the gallery band. Raising pivotZ instead
+     * (to clear 9.768) was tried and rejected: a genuine shoulder accent
+     * stone sits at centroid Z 9.74, right in the gap between object_49's
+     * top and the claws' floor (9.897) — no single height clears one without
+     * also freezing the other. Excluding object_49 by name has no such
+     * conflict: it never touches the shoulders (it is not part of the
+     * pillar), so leaving it untouched costs nothing.
      */
     shoulderHinge: {
       belowCarat: 0.50,
       pivotXAbs: 5.903,
       pivotZ: 9.7,
       maxAngleDeg: 14,
+      excludeParts: ['object_49'],
     },
 
     tableZ: 15.251,

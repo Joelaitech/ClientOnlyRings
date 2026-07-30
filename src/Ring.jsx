@@ -240,7 +240,7 @@ export default function Ring({ profile, config }) {
         );
       }
 
-      if (hinge) {
+      if (hinge && !hinge.excludeParts?.includes(p.name)) {
         let rigidAt = null;
         if (p.isStone) {
           // Centroid AFTER the size/width pass, matching bend's seatAt above.
@@ -278,11 +278,29 @@ export default function Ring({ profile, config }) {
     const seat = profile.head.seatZ ?? profile.head.pivotZ;
     const full = profile.head.scaleFullAtZ ?? seat;
     const liftMM = profile.head.liftMM ?? 0;
+    /**
+     * Some head parts straddle the seat/fullAtZ boundaries themselves (e.g.
+     * the oval's stem, object_1/5/8/9, Z 9.66-11.19 vs seatZ 10.00 and
+     * scaleFullAtZ 10.50 — part of that one piece sits frozen, part ramps,
+     * part gets full scale+lift). Continuing to shrink it below a carat
+     * where that internal split already reads fine visibly "chips" it —
+     * different sub-regions of the SAME part pulling apart at different
+     * rates as carat keeps dropping. `freezeParts` names the pieces that
+     * should simply stop changing once carat crosses `freezeBelowCarat`,
+     * holding them at exactly their appearance there instead of continuing
+     * to shrink. Both are opt-in — no effect unless a profile sets them.
+     */
+    const freezeParts = profile.head.freezeParts ?? [];
+    const freezeFloor = profile.head.freezeBelowCarat ?? null;
+    const sFrozen = freezeFloor != null
+      ? CARAT.scale(Math.max(carat, freezeFloor), profile.master.carat)
+      : s;
 
     for (const p of headParts) {
       const attr = p.geometry.attributes.position;
       const target = attr.array;
-      deformHead(p.base, target, s, seat, full, liftMM);
+      const partScale = freezeParts.includes(p.name) ? sFrozen : s;
+      deformHead(p.base, target, partScale, seat, full, liftMM);
 
       /**
        * RING SIZE: expand the head radially, the same way the shank is expanded.
