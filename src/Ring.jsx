@@ -313,10 +313,28 @@ export default function Ring({ profile, config }) {
        * that appeared at US 9-13 in the 0.25-0.75 ct range.
        *
        * Applying the same radial offset here keeps the two locked together at
-       * every size. Band thickness and stone size are unaffected: the offset is
-       * a fixed distance along each vertex's own radius, not a scale.
+       * every size — for METAL. deformMetal pushes each vertex a fixed distance
+       * along ITS OWN radius, which is only shape-preserving for something
+       * radially thin like the shank band. The centre stone has real width, so
+       * two vertices on opposite edges sit at slightly different radii and get
+       * pushed along slightly different directions — measured on a 4 mm-wide
+       * stone, a US 3->13 delta of 3 mm fanned it out to 5.0 mm, a 25% stretch,
+       * which is exactly the "head elongates with ring size" report on the
+       * clientobj2 (LR64530) ring. Stones instead get ONE offset computed from
+       * their own (post-deformHead) centroid and translated rigidly — same
+       * fix the shank's accent stones already use, just computed after carat
+       * scaling here since the centre stone's centroid moves with carat.
        */
-      deformMetal(target, target, delta, 1, boreZ, axisY);
+      if (p.isStone) {
+        let cx = 0, cy = 0, cz = 0;
+        const n = target.length / 3;
+        for (let i = 0; i < target.length; i += 3) {
+          cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
+        }
+        deformStoneRigid(target, target, { x: cx / n, z: cz / n }, delta, boreZ);
+      } else {
+        deformMetal(target, target, delta, 1, boreZ);
+      }
 
       attr.needsUpdate = true;
       p.geometry.computeBoundingSphere();

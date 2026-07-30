@@ -56,6 +56,30 @@ export default function App() {
    */
   const boreZ = -profile.master.boreCenter.z;
 
+  /**
+   * CAMERA-DISTANCE COMPENSATION FOR RING SIZE.
+   * ---------------------------------------------------------------------------
+   * The head has to ride outward with ring size to stay welded to the growing
+   * shoulders (see Ring.jsx) — that offset is model-Z, which this rig's -90deg
+   * rotation maps directly onto world Y. So a bigger ring size moves the head
+   * closer to the camera's own height, and a FIXED camera sees an object at a
+   * different distance as a different apparent size — ordinary perspective,
+   * not a geometry bug, but visible as "the diamond looks bigger at max ring
+   * size" when comparing screenshots at a fixed zoom. Measured on the
+   * clientobj2 (LR64530) ring at US3 vs US13: 2.25% apparent width change,
+   * 0.65% height, purely from this position shift.
+   *
+   * Countering it by shifting the WHOLE RIG down by radialDelta in world Y
+   * cancels the head's own +radialDelta drift almost exactly (measured
+   * residual: 0.003% / 0.004%, floating-point noise) — the head lands back at
+   * the same screen position and apparent size at every ring size. The band's
+   * bottom — which independently moves away from the bore in the opposite
+   * direction — ends up visually travelling further as a result, but that
+   * reads as the resizing actually happening, not as an error, and nothing
+   * about the head/diamond region was touched to get there.
+   */
+  const ringSizeCompensationY = -resolved.shank.radialDelta;
+
   return (
     <div className="app">
       <div className="viewport">
@@ -118,14 +142,21 @@ export default function App() {
           <Suspense fallback={<Loader />}>
             {/* key on ring id so switching rings remounts cleanly rather than
                 trying to reuse the previous ring's geometry */}
-            <group rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, boreZ]}>
+            <group
+              rotation={[-Math.PI / 2, 0, 0]}
+              position={[0, ringSizeCompensationY, boreZ]}
+            >
               <Ring key={profile.id} profile={profile} config={resolved.config} />
             </group>
 
             {/* Softer and lighter than on the dark backdrop: at 0.45 opacity a
-                contact shadow reads as a grey smudge against near-white. */}
+                contact shadow reads as a grey smudge against near-white.
+                Shares ringSizeCompensationY with the ring group above (a
+                sibling, not a child, so it isn't shifted automatically) —
+                without it the band would drift away from a shadow plane
+                fixed at the old Y, on top of its own pre-existing drift. */}
             <ContactShadows
-              position={[0, -11.2, 0]}
+              position={[0, -11.2 + ringSizeCompensationY, 0]}
               opacity={0.22}
               scale={55}
               blur={3.2}
