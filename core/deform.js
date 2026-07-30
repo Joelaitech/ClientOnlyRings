@@ -100,18 +100,56 @@ export function deformStoneRigid(base, target, centroid, delta, boreCenterZ = 0)
  *   - at and below the seat, XY stays at master width, so the base keeps
  *     touching the shoulders exactly as modelled;
  *   - above `fullAtZ`, XY scales fully, so the claws and stone shrink properly;
- *   - Z always scales fully about the seat, so overall proportions hold.
+ *   - Z always scales fully about the seat, so overall proportions hold —
+ *     EXCEPT at or below the seat, which stays frozen (see below).
  *
  * The result reads as a head re-cut for a smaller stone rather than a shrunken
  * copy of the whole assembly — which is what a bench jeweller actually does.
+ *
+ * Z BELOW THE SEAT IS FROZEN, NOT BLENDED WITH XY'S RAMP.
+ * ---------------------------------------------------------------------------
+ * An earlier version scaled Z fully about the seat unconditionally, which is
+ * only correct for a head whose lowest vertex sits AT the seat. The oval's
+ * stem dips to Z 9.655, 0.345 mm below its 10.00 seat, and unconditional Z
+ * scaling pulled that stem tip UPWARD as carat shrank, opening a gap against
+ * the gallery it's modelled to sit in.
+ *
+ * The fix tried first shared XY's smoothstep weight with Z too, ramping both
+ * from the seat to fullAtZ. That broke something else: two head surfaces
+ * that are modelled to meet or nearly meet at slightly different HEIGHTS
+ * within that ramp (a stem next to a claw base, say) each got their OWN
+ * height's blend weight — which are meant to differ continuously by design
+ * — and so picked up slightly different Z scale factors and visibly pulled
+ * apart exactly at that internal join, on top of the gallery joint this was
+ * meant to fix.
+ *
+ * So Z gets a plain TWO-PIECE rule instead: frozen (identity) at or below
+ * the seat, then the ORIGINAL unconditional linear scale above it — the same
+ * formula every ring already used above the seat, untouched. Only the
+ * previously-unconditional part below the seat changes; nothing above it,
+ * and XY's own ramp, are touched at all.
+ *
+ * OPTIONAL LIFT — counteracts the seat-ward pull reading as "sunk into the
+ * band" at low carat. Shrinking scale<1 necessarily pulls everything above
+ * the seat DOWN toward it (that's what "scale about the seat" means), which
+ * on the oval read as the whole basket dropping too close to the gallery
+ * band right where they meet. `liftMM` adds a small upward ADDITIVE offset —
+ * not a further scale — above the seat, ramping in with XY's own `w` so it
+ * is exactly 0 at the seat (no new discontinuity there) and full strength by
+ * fullAtZ. Being additive rather than multiplied by position, it does not
+ * reintroduce the internal-join separation the blended-scale attempt above
+ * caused: two nearly-coincident vertices at slightly different heights pick
+ * up nearly the same lift, not a lever-arm-amplified difference.
  *
  * @param {Float32Array} base   pristine head positions
  * @param {Float32Array} target buffer to write into
  * @param {number} scale        carat linear scale (1 = master)
  * @param {number} seatZ        the plane where head metal meets the shoulders
  * @param {number} fullAtZ      height at which XY scaling reaches full strength
+ * @param {number} [liftMM]     extra upward travel at scale -> 0, full strength
+ *   by fullAtZ, fading to 0 at the seat; 0 (no lift) by default
  */
-export function deformHead(base, target, scale, seatZ, fullAtZ) {
+export function deformHead(base, target, scale, seatZ, fullAtZ, liftMM = 0) {
   const span = fullAtZ - seatZ;
   const smoothstep = (t) => t * t * (3 - 2 * t);
 
@@ -120,14 +158,16 @@ export function deformHead(base, target, scale, seatZ, fullAtZ) {
     const y = base[i + 1];
     const z = base[i + 2];
 
-    // Z: full scale about the seat, so the seat plane is invariant.
-    target[i + 2] = seatZ + (z - seatZ) * scale;
-
     // XY: ramp from master width at the seat to full scale higher up.
     let w;
     if (span <= 0 || z >= fullAtZ) w = 1;
     else if (z <= seatZ) w = 0;
     else w = smoothstep((z - seatZ) / span);
+
+    // Z: frozen at/below the seat (so a stem dipping below it stays put),
+    // the original full linear scale about the seat above it, plus the
+    // optional lift (0 at the seat, same ramp as XY, so it stays continuous).
+    target[i + 2] = z <= seatZ ? z : seatZ + (z - seatZ) * scale + liftMM * (1 - scale) * w;
 
     const s = 1 + (scale - 1) * w;
     target[i] = x * s;
@@ -158,9 +198,15 @@ export function deformHead(base, target, scale, seatZ, fullAtZ) {
  * @param {number} tipZ     height of the tips, where it reaches full strength
  * @param {number} inwardMM how far the tip moves toward the ring axis
  * @param {number} downMM   how far the tip drops
+ * @param {{x:number,y:number,z:number}|null} rigidAt  stone centroid, or null for metal
+ * @param {number} [bulgeMM]  outward bow at the ramp's midpoint, fading to 0 at
+ *   both `fromZ` (still attached, unmoved) and the tip (still fully pulled in
+ *   and down) — reads as the shoulder flexing outward before curving in to
+ *   meet the head, rather than swinging inward on a straight hinge. 0 by
+ *   default (the original straight-pull shape).
  */
 export function bendShoulders(
-  target, amount, fromZ, tipZ, inwardMM, downMM, rigidAt = null
+  target, amount, fromZ, tipZ, inwardMM, downMM, rigidAt = null, bulgeMM = 0
 ) {
   if (amount <= 0) return;
   const span = tipZ - fromZ;
@@ -179,14 +225,21 @@ export function bendShoulders(
   if (rigidAt) {
     const z = rigidAt.z;
     if (z <= fromZ) return;
-    const w = smoothstep(Math.min(1, (z - fromZ) / span)) * amount;
+    const t = Math.min(1, (z - fromZ) / span);
+    const w = smoothstep(t) * amount;
     if (w === 0) return;
 
     const r = Math.hypot(rigidAt.x, rigidAt.y);
     const pull = r > 1e-6 ? (inwardMM * w) / r : 0;
-    const dx = -rigidAt.x * pull;
-    const dy = -rigidAt.y * pull;
+    let dx = -rigidAt.x * pull;
+    let dy = -rigidAt.y * pull;
     const dz = -downMM * w;
+
+    if (bulgeMM && r > 1e-6) {
+      const bow = 4 * t * (1 - t) * amount;
+      dx += (rigidAt.x / r) * bulgeMM * bow;
+      dy += (rigidAt.y / r) * bulgeMM * bow;
+    }
 
     for (let i = 0; i < target.length; i += 3) {
       target[i] += dx;
@@ -200,7 +253,8 @@ export function bendShoulders(
     const z = target[i + 2];
     if (z <= fromZ) continue;
 
-    const w = smoothstep(Math.min(1, (z - fromZ) / span)) * amount;
+    const t = Math.min(1, (z - fromZ) / span);
+    const w = smoothstep(t) * amount;
     if (w === 0) continue;
 
     // Move toward the ring axis in the ring-face plane. Scaling rather than
@@ -213,8 +267,80 @@ export function bendShoulders(
       const pull = (inwardMM * w) / r;
       target[i] = x - x * pull;
       target[i + 1] = y - y * pull;
+
+      if (bulgeMM) {
+        const bow = 4 * t * (1 - t) * amount;
+        target[i] += (x / r) * bulgeMM * bow;
+        target[i + 1] += (y / r) * bulgeMM * bow;
+      }
     }
     target[i + 2] = z - downMM * w;
+  }
+}
+
+/**
+ * Rotate the shoulder tip RIGIDLY about a fixed pivot, as an alternative to
+ * bendShoulders() above.
+ *
+ * bendShoulders scales each vertex's pull by its OWN height, so a straight
+ * rail segment comes out progressively more curved toward the tip — visually
+ * that reads as the piece being reshaped (chipped/warped) rather than moved.
+ * A real rail doesn't bow; it pivots at its base. Rotating every vertex above
+ * the pivot by the SAME angle preserves the segment's shape exactly (every
+ * edge stays the same length and stays straight) while still swinging the
+ * far end in and down to meet a smaller head.
+ *
+ * Only vertices ABOVE pivotZ move; at and below it, untouched, which is
+ * where the segment stays attached to the rest of the shoulder.
+ *
+ * `pivotXAbs` is a MAGNITUDE, not a signed coordinate — the two shoulders are
+ * a mirrored pair of parts (one all-positive-X, one all-negative-X), so each
+ * vertex's own sign picks which side's pivot (+pivotXAbs or -pivotXAbs) and
+ * which rotation direction (so both shoulders sweep inward, not one out).
+ *
+ * @param {Float32Array} target    buffer to modify IN PLACE (already size/width deformed)
+ * @param {number} amount          0..1 blend of the full rotation (0 = no rotation)
+ * @param {number} pivotXAbs       |X| of the hinge point (same magnitude both sides)
+ * @param {number} pivotZ          Z of the hinge point — at or below this, untouched
+ * @param {number} maxAngleDeg     rotation at amount = 1, in degrees
+ * @param {{x:number,y:number,z:number}|null} rigidAt  stone centroid, or null for metal
+ */
+export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg, rigidAt = null) {
+  if (amount <= 0) return;
+  const angle = (maxAngleDeg * Math.PI / 180) * amount;
+
+  const rotate = (x, z) => {
+    const sign = x >= 0 ? 1 : -1;
+    const pivotX = sign * pivotXAbs;
+    const theta = sign * angle;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    const dx = x - pivotX;
+    const dz = z - pivotZ;
+    return [pivotX + dx * cosT - dz * sinT, pivotZ + dx * sinT + dz * cosT];
+  };
+
+  // Stones: evaluate the rotation ONCE at the centroid and translate the
+  // whole stone by that offset, exactly as bendShoulders' rigidAt path does
+  // — a stone must never be reshaped, only moved.
+  if (rigidAt) {
+    if (rigidAt.z <= pivotZ) return;
+    const [nx, nz] = rotate(rigidAt.x, rigidAt.z);
+    const dx = nx - rigidAt.x;
+    const dz = nz - rigidAt.z;
+    for (let i = 0; i < target.length; i += 3) {
+      target[i] += dx;
+      target[i + 2] += dz;
+    }
+    return;
+  }
+
+  for (let i = 0; i < target.length; i += 3) {
+    const z = target[i + 2];
+    if (z <= pivotZ) continue;
+    const [nx, nz] = rotate(target[i], z);
+    target[i] = nx;
+    target[i + 2] = nz;
   }
 }
 

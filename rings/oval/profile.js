@@ -116,37 +116,63 @@ export default {
     scaleFullAtZ: 10.50,
 
     /**
-     * SHOULDER BEND — close the last joint from the SHANK side.
-     *
-     * Same failure as the pear: at the bottom of the range the basket rail
-     * (head object_3) shrinks away from the shoulder it sits against (shank
-     * object_5). Measured rail-to-shoulder gap:
-     *   1.50 ct (master)  0.028 mm
-     *   0.50 ct           0.029 mm   <- already fine, no correction needed
-     *   0.25 ct           0.630 mm   <- the only break
-     *
-     * Every other head part is either permanently joined (object_1/5/8/9, all
-     * 0.007-0.043 mm across the range) or never touches the shank at all
-     * (object_2/4/6/7, 0.25-0.30 mm even at master). So this one contact is the
-     * whole problem — the same conclusion as the pear.
-     *
-     * Travel swept against the real mesh at full strength; the straight-line
-     * delta (0.396 in, 0.490 down) undershoots because the tip travels along
-     * the rail's curve:
-     *   in 0.40 down 0.50 -> 0.174 mm     in 0.60 down 0.50 -> 0.110
-     *   in 0.80 down 0.70 -> 0.011        in 0.60 down 0.70 -> 0.0095  <- used
-     *
-     * fromZ 10.5 rather than lower: at 9.5 the curvature jumps to 1.25 (versus
-     * 0.34 here) because the bend starts inside the gallery, which is stiffer
-     * than the pear's open shoulder. Bore measured unchanged at 8.310 mm for
-     * every setting tried.
+     * LIFT — at 0.25 ct the head reads as sunk too far down toward the
+     * gallery band: shrinking necessarily pulls everything above the seat
+     * DOWN toward it (deformHead scales Z about the seat), and here that
+     * read as the basket crowding the band right where they meet. A small
+     * additive upward offset above the seat (0 right at the seat, full
+     * strength by scaleFullAtZ — see deformHead in core/deform.js) gives it
+     * back some clearance without moving the seat itself or the frozen stem
+     * below it, so the gallery joint fixed earlier is untouched.
      */
-    shoulderBend: {
+    liftMM: 0.9,
+
+    /**
+     * SHOULDER HINGE — close the last joint from the SHANK side, as a RIGID
+     * rotation rather than a curve (see rotateShoulderTip in core/deform.js).
+     *
+     * Same underlying failure as the pear: at the bottom of the carat range
+     * the basket rail (head object_3) shrinks away from the shoulder it sits
+     * against. bendShoulders (a per-vertex height-scaled pull) was tried
+     * first — closing the gap, but visibly reshaping a straight rail into a
+     * curve, which read as the piece being chipped rather than moved.
+     *
+     * A pivot at Z 12.0 (tried first) only rotated the small top claw piece
+     * (shank object_3, Z 12.57-13.58) — everything below it, including the
+     * accent rows at Z 9.90-12.41 (shank object_7/8/21/22/27/28/41/42), held
+     * completely still. That left a visible seam where the rotated tip met
+     * the untouched shoulder below it, and the tip itself no longer lined up
+     * with the rest of the pillar — reading as a gap, not a bend.
+     *
+     * pivotZ 9.0 (first try) instead: below the lowest of those accent parts
+     * (9.90), so ALL of them rotate as complete, undistorted rigid pieces
+     * along with the top of shank object_5 above this height — the whole
+     * visible pillar swings together as one connected unit.
+     *
+     * BUT 9.0 cuts straight through the GALLERY — the small decorative ring
+     * of accents under the head (shank object_56-95 and the smaller
+     * Diamond_Round gallery stones, all centred near X=0, topping out at
+     * Z 9.53/9.56). Splitting that lattice partway up its height visibly
+     * shredded it. pivotZ 9.7 clears the gallery's highest point (9.56) with
+     * margin while still sitting below the shoulder accent parts (9.90) —
+     * so the gallery stays completely untouched and the whole shoulder
+     * pillar still swings as one piece above it.
+     *
+     * pivotXAbs 5.903 is the measured cross-section centroid of shank
+     * object_5 at Z 9.7. Below this height the shoulder (and the whole
+     * gallery) is untouched — still exactly on its own modelled shape.
+     *
+     * maxAngleDeg 14: swept against object_3's real corners — moves
+     * (2.92, 13.58) to about (2.07, 12.74), essentially unchanged from the
+     * Z 9.0 pivot (the shorter arm from the higher pivot barely affects the
+     * result) — the same rigid swing, just guaranteed not to touch the
+     * gallery.
+     */
+    shoulderHinge: {
       belowCarat: 0.50,
-      fromZ: 10.5,
-      tipZ: 13.58,
-      inwardMM: 0.60,
-      downMM: 0.70,
+      pivotXAbs: 5.903,
+      pivotZ: 9.7,
+      maxAngleDeg: 14,
     },
 
     tableZ: 15.251,

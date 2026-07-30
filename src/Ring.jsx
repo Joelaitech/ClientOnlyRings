@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { METALS, DIAMOND, CARAT, SHANK_WIDTH } from '../core/standards.js';
 import {
   deformMetal, deformStoneRigid, deformHead,
-  bendShoulders, bendPillarToHead, bendStoneToHead, centroidXZ,
+  bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
@@ -150,6 +150,19 @@ export default function Ring({ profile, config }) {
         (bend.belowCarat - carat) / (bend.belowCarat - caratFloor)))
     : 0;
 
+  /**
+   * Shoulder HINGE — a rigid alternative to shoulderBend above. bendShoulders
+   * scales each vertex by its own height, so a straight rail segment comes
+   * out progressively curved; a hinge rotates every vertex above the pivot by
+   * the SAME angle, so the segment's own shape is preserved exactly (see
+   * rotateShoulderTip in core/deform.js). Same amount-blending as bendAmount.
+   */
+  const hinge = profile.head.shoulderHinge ?? null;
+  const hingeAmount = hinge
+    ? Math.max(0, Math.min(1,
+        (hinge.belowCarat - carat) / (hinge.belowCarat - caratFloor)))
+    : 0;
+
   // --- RING SIZE + WIDTH: deform the shank --------------------------------
   // Runs only when a shank parameter changes, not every frame. Both
   // transforms are applied in one pass from the pristine buffer, so they
@@ -223,14 +236,31 @@ export default function Ring({ profile, config }) {
         }
         bendShoulders(
           target, bendAmount, bend.fromZ + delta, bend.tipZ + delta,
-          bend.inwardMM, bend.downMM, seatAt
+          bend.inwardMM, bend.downMM, seatAt, bend.bulgeMM ?? 0
+        );
+      }
+
+      if (hinge) {
+        let rigidAt = null;
+        if (p.isStone) {
+          // Centroid AFTER the size/width pass, matching bend's seatAt above.
+          let cx = 0, cy = 0, cz = 0;
+          const n = target.length / 3;
+          for (let i = 0; i < target.length; i += 3) {
+            cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
+          }
+          rigidAt = { x: cx / n, y: cy / n, z: cz / n };
+        }
+        rotateShoulderTip(
+          target, hingeAmount, hinge.pivotXAbs, hinge.pivotZ + delta,
+          hinge.maxAngleDeg, rigidAt
         );
       }
       attr.needsUpdate = true;
       p.geometry.computeBoundingSphere();
     }
   }, [shankParts, delta, shankWidth, carat, profile, boreZ, axisY,
-      bend, bendAmount]);
+      bend, bendAmount, hinge, hingeAmount]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**
@@ -247,11 +277,12 @@ export default function Ring({ profile, config }) {
     const s = CARAT.scale(carat, profile.master.carat);
     const seat = profile.head.seatZ ?? profile.head.pivotZ;
     const full = profile.head.scaleFullAtZ ?? seat;
+    const liftMM = profile.head.liftMM ?? 0;
 
     for (const p of headParts) {
       const attr = p.geometry.attributes.position;
       const target = attr.array;
-      deformHead(p.base, target, s, seat, full);
+      deformHead(p.base, target, s, seat, full, liftMM);
 
       /**
        * RING SIZE: expand the head radially, the same way the shank is expanded.
