@@ -13,7 +13,7 @@ import * as THREE from 'three';
 
 import { METALS, DIAMOND, CARAT, SHANK_WIDTH } from '../core/standards.js';
 import {
-  deformMetal, deformStoneRigid, deformHead,
+  deformMetal, deformStoneRigid, deformHead, blendShankToHead,
   bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
@@ -136,6 +136,26 @@ export default function Ring({ profile, config }) {
   );
 
   /**
+   * THE HEAD'S OWN CENTROID, over every head part at once.
+   *
+   * Ring sizing moves the head as ONE RIGID BODY, so the radial offset must be
+   * derived from a single point shared by all of its parts — see the note in
+   * the carat/size effect below. Taken from the pristine `base` buffers so it
+   * is a fixed property of the model, independent of carat and ring size.
+   */
+  const headCentroid = useMemo(() => {
+    let sx = 0, sz = 0, n = 0;
+    for (const p of headParts) {
+      for (let i = 0; i < p.base.length; i += 3) {
+        sx += p.base[i];
+        sz += p.base[i + 2];
+        n++;
+      }
+    }
+    return n ? { x: sx / n, z: sz / n } : { x: 0, z: 0 };
+  }, [headParts]);
+
+  /**
    * These geometries are clones this component owns, so it must free them.
    * Without this, every ring switch would leak a full set of GPU buffers —
    * ~190k vertices for the emerald shank alone.
@@ -146,9 +166,35 @@ export default function Ring({ profile, config }) {
   }, [shankParts, headParts]);
 
   const boreZ = profile.master.boreCenter.z;
-  const axisY = profile.master.boreCenter.y ?? 0;
   /** Radial offset for the selected ring size, shared by shank and head. */
   const delta = radialDelta(ringSize, profile);
+
+  /**
+   * THE HEAD'S SINGLE RIGID OFFSET for this ring size — `delta` evaluated once,
+   * at the head's centroid. The head moves by exactly this (see the carat/size
+   * effect below), and the TOP OF THE SHANK is blended onto it too so the rail
+   * and the basket travel together — see blendShankToHead in core/deform.js.
+   */
+  const headOffset = useMemo(() => {
+    const dx = headCentroid.x;
+    const dz = headCentroid.z - boreZ;
+    const r = Math.hypot(dx, dz);
+    if (r < 1e-6) return { x: 0, z: delta };
+    return { x: (dx / r) * delta, z: (dz / r) * delta };
+  }, [headCentroid, boreZ, delta]);
+
+  /**
+   * Where the shank stops sizing on its own radius and starts riding the head's
+   * offset. The ramp must clear everything BELOW the joint — the bore, the
+   * band, the pave and (on the oval) the gallery — so it starts at the shoulder
+   * hinge's pivot where a profile defines one, since that pivot was already
+   * measured to sit above the gallery and below the shoulder accents. Rings
+   * with no hinge start at the seat, which is where their head meets the shank
+   * by definition.
+   */
+  const blendFromZ = profile.head.shoulderHinge?.pivotZ
+    ?? profile.head.seatZ ?? profile.head.pivotZ;
+  const blendFullZ = (profile.head.seatZ ?? profile.head.pivotZ) + 2.0;
 
   /**
    * Shoulder bend strength: 1 at the bottom of the carat range, easing to 0 at
@@ -241,6 +287,28 @@ export default function Ring({ profile, config }) {
           bendPillarToHead(p.base, target, seat, full, caratScale, bendFromZ, bulgeMM);
         }
       }
+
+      /**
+       * RING SIZE, TOP OF THE SHANK: hand the rail the head's single offset.
+       *
+       * Everything above only applied each vertex's OWN radial offset, which
+       * fans the shoulder tip outward in X as the ring grows (+0.59 mm on the
+       * oval, US 6.5 -> 13) while the rigid head does not follow. That slid the
+       * rail sideways off the basket and opened the joint to 0.397 mm at
+       * 0.50 ct / US 13 — worst exactly where the shoulder hinge has just
+       * switched off, so no carat correction was left to hide it.
+       *
+       * Blending the rail onto `headOffset` above `blendFromZ` makes rail and
+       * basket travel as one piece at every size; the gap goes flat at
+       * 0.059 mm and stops depending on ring size at all. Below the ramp
+       * nothing changes, so the bore and band are untouched. See
+       * blendShankToHead in core/deform.js.
+       */
+      blendShankToHead(
+        p.base, target, delta, boreZ, headOffset.x, headOffset.z,
+        blendFromZ, blendFullZ,
+        p.isStone ? p.centroid : null
+      );
 
       /**
        * At small carats the head shrinks away from the shoulder tips, so the
@@ -343,7 +411,8 @@ export default function Ring({ profile, config }) {
       }
       p.geometry.computeBoundingSphere();
     }
-  }, [shankParts, delta, shankWidth, carat, profile, boreZ, axisY,
+  }, [shankParts, delta, shankWidth, carat, profile, boreZ,
+      headOffset, blendFromZ, blendFullZ,
       bend, bendAmount, hinge, hingeAmount]);
 
   // --- CARAT: deform the head ---------------------------------------------
@@ -380,6 +449,13 @@ export default function Ring({ profile, config }) {
       ? CARAT.scale(Math.max(carat, freezeFloor), profile.master.carat)
       : s;
 
+    /**
+     * The head's single ring-size offset — `delta` evaluated ONCE at the head's
+     * centroid, shared with the shank's blend so the two agree exactly. See the
+     * long note in the loop below for why this is not per-vertex.
+     */
+    const { x: offX, z: offZ } = headOffset;
+
     for (const p of headParts) {
       const attr = p.geometry.attributes.position;
       const target = attr.array;
@@ -387,20 +463,52 @@ export default function Ring({ profile, config }) {
       deformHead(p.base, target, partScale, seat, full, liftMM);
 
       /**
-       * RING SIZE: expand the head radially, the same way the shank is expanded.
+       * RING SIZE: move the head out to meet the resized shank.
        *
        * The head used to ride out on a rigid +Z group translation. But the shank
        * expands RADIALLY — a shoulder vertex moves in X as well as Z — so the
        * two diverged sideways as the ring grew. Measured on the oval shoulder
        * contact at (2.14, 12.51): at US 13 the shank moved 0.460 mm outward in X
        * while the head only moved up, which is exactly the 0.44 mm joint gap
-       * that appeared at US 9-13 in the 0.25-0.75 ct range.
+       * that appeared at US 9-13 in the 0.25-0.75 ct range. So the head takes
+       * the same radial offset the shank does.
        *
-       * Applying the same radial offset here keeps the two locked together at
-       * every size. Band thickness and stone size are unaffected: the offset is
-       * a fixed distance along each vertex's own radius, not a scale.
+       * THE WHOLE HEAD IS ONE RIGID BODY. NOT A PER-VERTEX RADIAL PUSH.
+       * ---------------------------------------------------------------------
+       * deformMetal moves each vertex along ITS OWN radius from the bore
+       * centre. That is exactly right for the SHANK, whose cross-section is
+       * small next to its radius, so the section translates and band thickness
+       * is preserved.
+       *
+       * The head is the opposite case. It sits 12-13 mm out from the bore and
+       * spans several mm across X, so its vertices' radial directions FAN
+       * APART and the whole setting splays open as the ring grows. Measured on
+       * the oval's basket rail (head object_3) at a FIXED 1.50 ct, X span went
+       * 5.636 mm at US 3 -> 6.303 at US 6.5 -> 7.540 at US 13 — +34% with the
+       * carat slider never touched, while Y stayed at 9.408 mm because Y is not
+       * part of the radial term. A prong basket that widens in X but not in Y
+       * reads exactly as the centre stone changing proportion with ring size.
+       * Every ring in the catalogue had it: +26% at US 13 and -10% at US 3,
+       * at every carat.
+       *
+       * The stone was already exempted from this — it took deformStoneRigid,
+       * one offset from its own centroid — but the metal around it was not, so
+       * the setting kept splaying around a correctly-sized stone. Both take the
+       * SAME single offset now, derived once from `headCentroid`, so the head
+       * travels out to the shank and keeps its modelled shape exactly at every
+       * size. Sharing one offset (rather than each part using its own centroid)
+       * is what keeps the head's parts from drifting relative to each other.
+       *
+       * Cost, measured worst-case head-metal -> shank-metal gap over
+       * 0.25/master/3.00 ct x US 3/master/13: 0.115 mm on the pear, 0.056 mm or
+       * less on the other three, against the master weld's own 0.028-0.076 mm.
+       * Every master row is unchanged. That is a fraction of a tenth of a mm of
+       * joint traded for up to 1.4 mm of splay.
        */
-      deformMetal(target, target, delta, 1, boreZ, axisY);
+      for (let i = 0; i < target.length; i += 3) {
+        target[i] += offX;
+        target[i + 2] += offZ;
+      }
 
       attr.needsUpdate = true;
       /**
@@ -415,7 +523,7 @@ export default function Ring({ profile, config }) {
       }
       p.geometry.computeBoundingSphere();
     }
-  }, [headParts, carat, profile, delta, boreZ, axisY]);
+  }, [headParts, headOffset, carat, profile, delta, boreZ]);
 
   return (
     <group>

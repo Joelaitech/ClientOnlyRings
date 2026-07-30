@@ -87,6 +87,98 @@ export function deformStoneRigid(base, target, centroid, delta, boreCenterZ = 0)
 }
 
 /**
+ * Blend the TOP of the shank from its own radial sizing offset to the HEAD's
+ * single rigid one, so the two still meet at large ring sizes.
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS
+ *
+ * deformMetal pushes every shank vertex along ITS OWN radius from the bore.
+ * Near the band that is exactly right. But the shoulder RAIL runs up to the
+ * head, and its own radius points progressively further outboard the higher it
+ * goes — so as the ring grows, the rail's tip fans OUTWARD in X. Measured on
+ * the oval's object_5 tip, US 6.5 -> US 13: X 2.981 -> 3.571 mm, +0.59 mm of
+ * pure sideways travel.
+ *
+ * The head does not follow that fan. It is one rigid body translated along a
+ * single direction taken at its own centroid (see the head effect in
+ * src/Ring.jsx), because letting IT fan per-vertex is what splayed the setting
+ * open in the first place. So the rail slides laterally off the basket it is
+ * modelled to clasp, and the joint opens by an amount proportional to `delta`:
+ *
+ *     oval, 0.50 ct, basket -> shoulder rail
+ *        US 3    0.035 mm      US 10   0.199 mm
+ *        US 6.5  0.057 mm      US 13   0.397 mm
+ *
+ * Fourteen times the master weld at the top of the size range, and invisible at
+ * the size the mount was tuned at — which is why it survived the carat sweeps.
+ *
+ * THE CORRECTION is to hand the rail the head's offset instead of its own,
+ * ramped in by height so nothing below the joint is disturbed:
+ *
+ *   - at/below `fromZ` the vertex keeps its own radial offset exactly, so the
+ *     band, the bore and the pave are bit-identical to before;
+ *   - by `fullZ` it has taken the head's offset in full, so rail and basket
+ *     travel as one piece however large the ring gets;
+ *   - smoothstep between, so there is no crease where the ramp starts.
+ *
+ * Applied as a DIFFERENCE on top of deformMetal's output, so it composes with
+ * the carat-driven bends that run after it rather than replacing them.
+ *
+ * @param {Float32Array} base    pristine shank positions (for the height test)
+ * @param {Float32Array} target  buffer already written by deformMetal
+ * @param {number} delta         radial offset in mm, same value deformMetal got
+ * @param {number} boreCenterZ
+ * @param {number} headOffX      the head's single rigid X offset
+ * @param {number} headOffZ      the head's single rigid Z offset
+ * @param {number} fromZ         height where the blend starts easing in
+ * @param {number} fullZ         height at which it reaches the head's offset
+ * @param {{x:number,z:number}|null} [rigidAt]  stone centroid, or null for metal
+ */
+export function blendShankToHead(
+  base, target, delta, boreCenterZ, headOffX, headOffZ, fromZ, fullZ, rigidAt = null
+) {
+  const span = fullZ - fromZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  /** One vertex's own radial offset, the thing we are blending away from. */
+  const ownOffset = (x, z) => {
+    const dz = z - boreCenterZ;
+    const r = Math.hypot(x, dz);
+    if (r < 1e-6) return [0, delta];
+    return [(x / r) * delta, (dz / r) * delta];
+  };
+
+  /**
+   * A stone must never be reshaped, so it takes ONE offset evaluated at its
+   * centroid and translates rigidly — the same rule deformStoneRigid and
+   * bendStoneToHead already use for the pave.
+   */
+  if (rigidAt) {
+    const z = rigidAt.z;
+    if (z <= fromZ) return;
+    const w = span <= 0 ? 1 : smoothstep(Math.min(1, (z - fromZ) / span));
+    const [ox, oz] = ownOffset(rigidAt.x, rigidAt.z);
+    const dx = (headOffX - ox) * w;
+    const dz = (headOffZ - oz) * w;
+    for (let i = 0; i < target.length; i += 3) {
+      target[i] += dx;
+      target[i + 2] += dz;
+    }
+    return;
+  }
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z <= fromZ) continue;
+    const w = span <= 0 ? 1 : smoothstep(Math.min(1, (z - fromZ) / span));
+    const [ox, oz] = ownOffset(base[i], z);
+    target[i] += (headOffX - ox) * w;
+    // Y is the band-width axis and must stay independent of ring size.
+    target[i + 2] += (headOffZ - oz) * w;
+  }
+}
+
+/**
  * Scale a HEAD for carat while keeping its base welded to the shoulders.
  *
  * WHY A PLAIN GROUP SCALE IS NOT ENOUGH
