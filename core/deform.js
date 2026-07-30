@@ -320,17 +320,47 @@ export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg
     return [pivotX + dx * cosT - dz * sinT, pivotZ + dx * sinT + dz * cosT];
   };
 
-  // Stones: evaluate the rotation ONCE at the centroid and translate the
-  // whole stone by that offset, exactly as bendShoulders' rigidAt path does
-  // — a stone must never be reshaped, only moved.
+  /**
+   * Stones: evaluate the rotation ONCE at the centroid, then apply that SAME
+   * rigid rotation to every vertex about the centroid.
+   *
+   * A stone must never be RESHAPED — but a rigid body rotation is not a
+   * reshaping, and it is what actually happens on the bench. An earlier
+   * version only TRANSLATED the stone by its centroid's offset (copying
+   * bendShoulders' rigidAt path, where the correction is a bend and there is
+   * no single well-defined rotation to inherit). That was wrong here, because
+   * this function's whole point is that the seat swings through a real angle:
+   * measured on the oval at 0.25 ct, the seat metal rotated the full 14 deg
+   * while its six shoulder stones travelled up to 0.84 mm and tilted 0.00 deg
+   * — every stone left cocked 14 deg in its setting, driving its girdle
+   * through one seat wall and opening daylight at the other. That is the gap
+   * reported at both shoulder ends.
+   *
+   * Rotating about the CENTROID rather than the hinge pivot is what keeps this
+   * rigid: the centroid lands exactly where the translate-only version put it
+   * (so the stone still follows its seat), and the extra rotation is pure
+   * orientation about that point — girdle diameter and table size are
+   * unchanged, which `verify`'s "stones never resize" check confirms.
+   */
   if (rigidAt) {
     if (rigidAt.z <= pivotZ) return;
     const [nx, nz] = rotate(rigidAt.x, rigidAt.z);
     const dx = nx - rigidAt.x;
     const dz = nz - rigidAt.z;
+
+    // The seat's own swing: same sign convention as rotate() above, so a
+    // stone on either shoulder tilts the way its own side is tilting.
+    const theta = (rigidAt.x >= 0 ? 1 : -1) * angle;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+
     for (let i = 0; i < target.length; i += 3) {
-      target[i] += dx;
-      target[i + 2] += dz;
+      // Rotate about the centroid in the XZ (ring-face) plane...
+      const ox = target[i] - rigidAt.x;
+      const oz = target[i + 2] - rigidAt.z;
+      target[i] = rigidAt.x + ox * cosT - oz * sinT + dx;
+      // ...Y is the ring axis and the hinge does not act on it.
+      target[i + 2] = rigidAt.z + ox * sinT + oz * cosT + dz;
     }
     return;
   }

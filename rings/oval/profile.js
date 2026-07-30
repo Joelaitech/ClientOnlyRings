@@ -116,16 +116,35 @@ export default {
     scaleFullAtZ: 10.50,
 
     /**
-     * LIFT — at 0.25 ct the head reads as sunk too far down toward the
-     * gallery band: shrinking necessarily pulls everything above the seat
-     * DOWN toward it (deformHead scales Z about the seat), and here that
-     * read as the basket crowding the band right where they meet. A small
-     * additive upward offset above the seat (0 right at the seat, full
-     * strength by scaleFullAtZ — see deformHead in core/deform.js) gives it
-     * back some clearance without moving the seat itself or the frozen stem
-     * below it, so the gallery joint fixed earlier is untouched.
+     * LIFT — a small additive upward offset above the seat (0 right at the
+     * seat, full strength by scaleFullAtZ — see deformHead in core/deform.js),
+     * to stop the shrinking head reading as sunk toward the gallery band.
+     *
+     * 0.2, NOT 0.9. The original 0.9 was chosen to buy clearance over the
+     * gallery band, but it does not actually do that: the gallery contact is
+     * made by the FROZEN stem plate (freezeParts below), which sits at or
+     * below seatZ where deformHead applies no lift at all. Measured gallery
+     * clearance is a flat 0.043 mm at lift 0.9 / 0.4 / 0.2 alike — the
+     * parameter never moved it.
+     *
+     * What 0.9 DID do was push the basket up out of reach of the shoulder
+     * rail, opening the joint the hinge below exists to close. Measured gap,
+     * head object_3 (basket rail) -> shank object_5/44 (shoulder rail), at
+     * 0.25 ct with the hinge active:
+     *
+     *        liftMM     shoulder joint     gallery clearance
+     *        0.9        0.200 mm           0.043 mm
+     *        0.4        0.072 mm           0.043 mm
+     *        0.2        0.003 mm           0.043 mm   <- used
+     *        0.0        0.051 mm           0.043 mm
+     *
+     * 0.2 closes the joint tighter than the 1.50 ct master weld itself
+     * (0.028 mm) and costs nothing anywhere else: the master, 1.00 and
+     * 0.50 ct all stay within 0.01-0.03 mm of where lift 0.9 put them.
+     * Below 0.2 the head starts to sink and the gap reopens from the other
+     * side, so this is a genuine minimum rather than "less is better".
      */
-    liftMM: 0.9,
+    liftMM: 0.2,
 
     /**
      * FREEZE THE STEM PLATE BELOW 0.50 CT.
@@ -209,6 +228,46 @@ export default {
       pivotZ: 9.7,
       maxAngleDeg: 14,
       excludeParts: ['object_49'],
+
+      /**
+       * SEAT PULL — bury the rail in the head instead of just touching it.
+       *
+       * The 14 deg swing above closes the joint (0.003 mm) but leaves it
+       * reading as a butt contact: measured ENGAGEMENT, how far the shoulder
+       * rail's inner face reaches past the basket rail's outer face, was
+       * +0.798 mm at 3 heights on the 1.50 ct master versus only +0.092 mm at
+       * 1 height at 0.25 ct. Same contact, a tenth of the overlap.
+       *
+       * A bigger angle cannot supply it (see the note in src/Ring.jsx — past
+       * ~22 deg the rail swings clear of the basket and the gap grows again),
+       * so this adds the missing TRANSLATION. Swept at 0.25 ct:
+       *
+       *     inward/down     gap      engagement   #heights
+       *     0.00 / 0.00     0.003    +0.092       1
+       *     0.30 / 0.15     0.027    +0.181       3
+       *     0.50 / 0.25     0.036    +0.231       2
+       *     0.80 / 0.40     0.029    +0.404       3   <- used
+       *
+       * 0.80/0.40 gives the deepest engagement while holding the gap at
+       * 0.029 mm — indistinguishable from the master's own 0.028 mm weld.
+       *
+       * Engagement now falls off smoothly with carat instead of collapsing:
+       * +0.798 (1.50) -> +0.550 (1.00) -> +0.362 (0.75) -> +0.404 (0.25).
+       *
+       * `fromZ` 9.7 matches pivotZ so the pull starts exactly where the swing
+       * does; `tipZ` 13.3 is the measured top of the shoulder rail
+       * (object_5/44 reach Z 13.30). Worst neighbour-separation on that rail
+       * is 0.075 mm, well inside the 0.15 mm spacing, so the rail stays a
+       * continuous surface. The bore is untouched at every setting tried —
+       * mandrel radius holds at 8.0502 mm (US 6.5 exact) because the weight
+       * is zero below fromZ, which is far above the finger hole.
+       */
+      seatPull: {
+        fromZ: 9.7,
+        tipZ: 13.3,
+        inwardMM: 0.80,
+        downMM: 0.40,
+      },
     },
 
     tableZ: 15.251,

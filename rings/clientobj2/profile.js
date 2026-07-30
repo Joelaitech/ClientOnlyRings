@@ -121,6 +121,52 @@ export default {
      */
     scaleFullAtZ: 9.75,
 
+    /**
+     * PRONG-TO-SHOULDER GAP — why this ring bends its shank with carat.
+     * -------------------------------------------------------------------------
+     * The head's XY scale reaches full strength at scaleFullAtZ (9.75), so
+     * above that height the prong shafts (head object_1..4) are pulled inward
+     * by the full carat factor while the shoulder walls (shank object_9/10,
+     * fixed at |X| >= 1.68) do not move at all. The shaft swings inboard away
+     * from the wall it is modelled to run against, and the daylight between
+     * them reads as a gap beside the prong.
+     *
+     * Measured nearest distance, head metal -> shank metal, per 1 mm Z band:
+     *
+     *        Z band     1.00 ct    0.25 ct
+     *        9-10       0.037      0.017     <- seat weld, correct at both
+     *        10-11      0.410      0.568
+     *        11-12      0.292      0.507
+     *        12-13      0.509      0.530
+     *
+     * The seat weld is sound at every carat, so the head is NOT detaching —
+     * only the shaft mid-span pulls away. Correcting it from the SHANK side
+     * leaves the weld and the stone position untouched, which is what every
+     * previous attempt from the head side failed to do.
+     *
+     * NOT fixed with head.liftMM. Solving for the lift that keeps the basket
+     * rail's burial constant gives a consistent 3.07 mm, but applying it makes
+     * THIS gap worse — the 10-11 band goes 0.568 -> 0.661 mm at 0.25 ct. The
+     * rail was never the visible defect (object_5 sits 0.021 mm off the wall
+     * at 0.25 ct, essentially touching); the shaft is.
+     */
+    pillarBend: true,
+    /**
+     * Ramp the bend across the WHOLE carat range, not just the 0.25 ct floor.
+     * The gap is already 0.29 mm at the master and grows smoothly, so a
+     * floor-only correction would leave 0.50 and 0.75 ct gapped and would pop
+     * as the slider hit the end. See pillarBendAllCarats in src/Ring.jsx.
+     */
+    pillarBendAllCarats: true,
+    /**
+     * Start the bend well below the gap band (10-12) so the sweep reads as the
+     * wall flexing inward along its length rather than kinking at a hinge.
+     * object_9/10 span Z -0.47..12.44, so there is ample wall to curve across;
+     * 8.0 keeps the ramp clear of the pavé seats below (topmost melee at
+     * Z 9.59-10.65 rides the bend rigidly via bendStoneToHead).
+     */
+    pillarBendZ: 8.0,
+
     /** Extremes of the master head, for clearance checks. */
     minZ: 9.362,
     maxZ: 15.491,        // prong tips — highest point of the ring

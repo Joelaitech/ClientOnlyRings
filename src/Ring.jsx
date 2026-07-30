@@ -86,8 +86,24 @@ function prepare(obj, skip) {
      * always the pristine mesh.
      */
     const geom = child.geometry.clone();
-    // Rhino already wrote smoothed per-vertex normals — do NOT recompute,
-    // it destroys the hard girdle edges on the diamonds.
+    /**
+     * NORMALS. Rhino wrote smoothed per-vertex normals, and recomputing them on
+     * a STONE destroys its hard girdle edges — so stones keep theirs verbatim.
+     *
+     * Metal is different. The carat deformers (bendPillarToHead, bendShoulders,
+     * deformHead) are NON-UNIFORM: they scale X/Z by a height-dependent weight,
+     * so a shoulder wall physically leans inward as carat drops while its
+     * shipped normals still point where the vertical master pointed them. The
+     * surface is then lit as though it had not moved, and the shading break
+     * where the leaning wall meets the prong reads as a gap/seam beside the
+     * prong — worst at 0.25 ct, invisible at the 1.00 ct master, because the
+     * error scales with (1 - caratScale).
+     *
+     * So metal normals are recomputed after every deform (see the two effects
+     * below). That needs a non-indexed-safe source of truth for the smoothing,
+     * which computeVertexNormals() derives from the deformed positions itself —
+     * nothing extra to cache here.
+     */
     const pos = geom.attributes.position;
     parts.push({
       name,
@@ -179,13 +195,26 @@ export default function Ring({ profile, config }) {
      * and enabling it unconditionally would move their shoulder/accent
      * geometry near the seat even with bendFromZ/bulgeMM left at defaults.
      *
-     * It also only fires at the smallest carat (CARAT.MIN = 0.25) — every
-     * other value, including the 1.00 ct master, keeps the plain rigid
-     * shank exactly as it rendered before this feature existed. The bend
-     * was tuned to look right at the one carat where the head shrinks the
-     * most; interpolating it across the whole slider was never asked for.
+     * By DEFAULT it also only fires at the smallest carat (CARAT.MIN = 0.25) —
+     * every other value, including the 1.00 ct master, keeps the plain rigid
+     * shank exactly as it rendered before this feature existed. The emerald's
+     * bend was tuned to look right at the one carat where the head shrinks the
+     * most, and interpolating it across the whole slider was never asked for
+     * there.
+     *
+     * A profile that DOES need it across the range sets `pillarBendAllCarats`.
+     * clientobj2 needs that: its prong shafts stand off the shoulder walls by
+     * 0.29 mm already at 1.00 ct, widening to 0.51 mm at 0.25 ct (measured
+     * head-metal -> shank-metal, Z band 11-12), so a correction that only
+     * fires at the slider's floor would leave every intermediate carat gapped
+     * and would pop as the slider reached the end. `caratScale` already makes
+     * the bend proportional, so it is 0 at the master and eases in on its own
+     * — no extra ramp term is needed, and the emerald is untouched because it
+     * does not set the flag.
      */
-    const pillarBend = profile.head.pillarBend === true && carat <= CARAT.MIN + 1e-6;
+    const pillarBendAll = profile.head.pillarBendAllCarats === true;
+    const pillarBend = profile.head.pillarBend === true
+      && (pillarBendAll || carat <= CARAT.MIN + 1e-6);
     const bendFromZ = profile.head.pillarBendZ ?? seat;
     const bulgeMM = profile.head.pillarBulgeMM ?? 0;
 
@@ -255,8 +284,63 @@ export default function Ring({ profile, config }) {
           target, hingeAmount, hinge.pivotXAbs, hinge.pivotZ + delta,
           hinge.maxAngleDeg, rigidAt
         );
+
+        /**
+         * SEAT THE JOINT — an optional inward pull applied AFTER the rotation.
+         *
+         * The hinge alone only brings the shoulder rail into contact; it does
+         * not bury it in the head. Measured on the oval, how far the rail's
+         * inner face reaches past the basket's outer face ("engagement"):
+         *
+         *     1.50 ct master   +0.798 mm, at 3 sampled heights
+         *     0.25 ct, hinge   +0.092 mm, at 1 height
+         *
+         * So the master interlocks deeply while the hinged small-carat version
+         * merely grazes — the joint closes but reads thin, which is the "should
+         * be somewhat more joint" report.
+         *
+         * Rotating harder does NOT fix it: swept from 14 to 38 deg the gap
+         * bottoms out at 0.186 mm around 22 deg then WORSENS (1.041 mm at
+         * 38 deg) because the rail swings PAST the basket instead of into it.
+         * The missing motion is translation, not rotation, so this reuses
+         * bendShoulders for a small inward/downward pull on top of the swing.
+         *
+         * It rides `hingeAmount`, the SAME ramp as the rotation, so it is
+         * exactly 0 at and above hinge.belowCarat and eases in together with
+         * the swing — no new discontinuity anywhere on the slider, and every
+         * carat the hinge does not touch is bit-identical to before.
+         */
+        if (hinge.seatPull) {
+          let pullAt = null;
+          if (p.isStone) {
+            // Centroid AFTER the rotation above, so the stone rides the pull
+            // from where it now sits rather than from its pre-swing position.
+            let cx = 0, cy = 0, cz = 0;
+            const n = target.length / 3;
+            for (let i = 0; i < target.length; i += 3) {
+              cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
+            }
+            pullAt = { x: cx / n, y: cy / n, z: cz / n };
+          }
+          bendShoulders(
+            target, hingeAmount,
+            hinge.seatPull.fromZ + delta, hinge.seatPull.tipZ + delta,
+            hinge.seatPull.inwardMM, hinge.seatPull.downMM, pullAt,
+            hinge.seatPull.bulgeMM ?? 0
+          );
+        }
       }
       attr.needsUpdate = true;
+      /**
+       * Metal only — the shoulder bends above are non-uniform, so the shipped
+       * normals no longer match the surface they describe. Stones are moved
+       * rigidly (translation never invalidates a normal) and must keep their
+       * authored girdle edges, so they are skipped. See prepare().
+       */
+      if (!p.isStone) {
+        p.geometry.computeVertexNormals();
+        p.geometry.attributes.normal.needsUpdate = true;
+      }
       p.geometry.computeBoundingSphere();
     }
   }, [shankParts, delta, shankWidth, carat, profile, boreZ, axisY,
@@ -319,6 +403,16 @@ export default function Ring({ profile, config }) {
       deformMetal(target, target, delta, 1, boreZ, axisY);
 
       attr.needsUpdate = true;
+      /**
+       * deformHead ramps the XY scale with height, so head metal (the prong
+       * shafts especially) is reshaped, not just moved — its normals must be
+       * rebuilt for the same reason the shank's are. The centre stone is a
+       * Diamond_* part and keeps its authored normals. See prepare().
+       */
+      if (!p.isStone) {
+        p.geometry.computeVertexNormals();
+        p.geometry.attributes.normal.needsUpdate = true;
+      }
       p.geometry.computeBoundingSphere();
     }
   }, [headParts, carat, profile, delta, boreZ, axisY]);
