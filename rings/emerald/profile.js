@@ -107,7 +107,7 @@ export default {
      * measured Z 0.63-13.06 on the pillar meshes (object_8/object_9), so
      * there is plenty of shoulder to sweep the curve across instead.
      */
-    pillarBendZ: 6.5,
+    pillarBendZ: 4.5,
     /**
      * Outward bow at the bend's midpoint, at the minimum carat.
      *
@@ -222,9 +222,9 @@ export default {
      * Sizes at or below the threshold get nothing, so US 5 and down render
      * exactly as they do today.
      */
-    // pillarThickenPerSize: 0.012,
+    pillarThickenPerSize: 0.022,
     // /** Ring size the per-size ramp starts from. Below this it contributes 0. */
-    // pillarThickenFromSize: 5.0,
+    pillarThickenFromSize: 5.0,
 
     tableZ: 14.594,
     minZ: 8.961,
