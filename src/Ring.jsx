@@ -15,6 +15,7 @@ import { METALS, DIAMOND, CARAT, SHANK_WIDTH } from '../core/standards.js';
 import {
   deformMetal, deformStoneRigid, deformHead, blendShankToHead,
   bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
+  fixMirroredStone,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
@@ -105,10 +106,23 @@ function prepare(obj, skip) {
      * nothing extra to cache here.
      */
     const pos = geom.attributes.position;
+    const isStone = name.startsWith('Diamond_');
+
+    /**
+     * MIRRORED STONES. One shoulder of every supplied model has its pavé wound
+     * backwards — the artist mirrored a shoulder across X = 0 without unifying
+     * normals afterwards, and a mirror reverses triangle handedness. Back-face
+     * culling then discards the near surface and the stone reads as hollow.
+     *
+     * Detected per stone by signed volume, so a clean re-export is left alone
+     * and this becomes a no-op. See fixMirroredStone in core/deform.js.
+     */
+    if (isStone) fixMirroredStone(geom);
+
     parts.push({
       name,
       geometry: geom,
-      isStone: name.startsWith('Diamond_'),
+      isStone,
       base: new Float32Array(pos.array),
       centroid: centroidXZ(pos.array),
     });

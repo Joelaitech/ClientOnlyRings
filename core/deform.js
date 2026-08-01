@@ -580,3 +580,122 @@ export function centroidXZ(pos) {
   }
   return { x: sx / n, z: sz / n };
 }
+
+/**
+ * MIRRORED-STONE WINDING FIX — supplier defect, corrected at load.
+ * ============================================================================
+ * Every one of the four supplied models has one shoulder's pavé stones wound
+ * backwards. The artist modelled a single shoulder and MIRRORED it across
+ * X = 0 to make the other; a mirror is a negative scale, which reverses
+ * triangle handedness, and no normals-unify pass was run afterwards.
+ *
+ * Proof it is upstream, not ours: signed volume is already negative in the raw
+ * OBJs, and mirrored partners match to four decimals with opposite sign
+ * (pear x=-9.99 -> +0.2911, x=+9.99 -> -0.2911). Nothing in this pipeline can
+ * flip winding — the deformers only translate and scale by POSITIVE factors.
+ *
+ * Affected stones, per shank (side is NOT consistent between rings, so this
+ * detects rather than assumes):
+ *   pear        7 of 14   right     emerald   8 of 16   left
+ *   clientobj2  7 of 14   left      oval     19 of 38   mixed (14 pavé + 5 gallery)
+ *
+ * Why it renders hollow: three.js culls back faces by default, so on a
+ * reversed stone the near surface is discarded and you see through it. The
+ * diamond material also uses transmission, which refracts against the surface
+ * normal — pointing inward, those stones lose their sparkle entirely.
+ *
+ * DoubleSide would hide it but not fix it: refraction still runs against
+ * inward normals, so the mirrored side stays visibly duller than its partner.
+ * Reversing the triangles is the real correction.
+ */
+
+/**
+ * Signed volume of a closed triangle mesh (divergence theorem).
+ *
+ * Positive = outward-facing normals. Negative = reversed winding.
+ *
+ * Only meaningful on a CLOSED mesh, which is why isWatertight() gates the fix.
+ */
+export function signedVolume(pos, index) {
+  let vol = 0;
+  const tri = (a, b, c) => {
+    const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
+    const bx = pos[b * 3], by = pos[b * 3 + 1], bz = pos[b * 3 + 2];
+    const cx = pos[c * 3], cy = pos[c * 3 + 1], cz = pos[c * 3 + 2];
+    vol += (ax * (by * cz - bz * cy)
+          - ay * (bx * cz - bz * cx)
+          + az * (bx * cy - by * cx)) / 6;
+  };
+  if (index) {
+    for (let i = 0; i < index.length; i += 3) tri(index[i], index[i + 1], index[i + 2]);
+  } else {
+    for (let i = 0; i < pos.length / 3; i += 3) tri(i, i + 1, i + 2);
+  }
+  return vol;
+}
+
+/**
+ * Is every edge shared by exactly two triangles?
+ *
+ * MUST weld by POSITION first. These meshes carry split vertices along the
+ * hard girdle edges — the same point appears under several indices so its
+ * normals can differ — and testing raw indices reports every stone as open
+ * when in fact none are. Measured on a pear melee: 1166 raw indices weld to
+ * 458 real vertices, 912 triangles, zero boundary edges.
+ */
+export function isWatertight(pos, index) {
+  if (!index) return false;
+  const ids = new Map();
+  const weld = new Int32Array(pos.length / 3);
+  for (let i = 0; i < pos.length / 3; i++) {
+    const k = `${pos[i * 3].toFixed(5)}_${pos[i * 3 + 1].toFixed(5)}_${pos[i * 3 + 2].toFixed(5)}`;
+    let id = ids.get(k);
+    if (id === undefined) { id = ids.size; ids.set(k, id); }
+    weld[i] = id;
+  }
+  const edges = new Map();
+  for (let i = 0; i < index.length; i += 3) {
+    const a = weld[index[i]], b = weld[index[i + 1]], c = weld[index[i + 2]];
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = u < v ? `${u}_${v}` : `${v}_${u}`;
+      edges.set(k, (edges.get(k) || 0) + 1);
+    }
+  }
+  for (const n of edges.values()) if (n !== 2) return false;
+  return true;
+}
+
+/**
+ * Reverse triangle winding in place and flip the shipped normals to match.
+ *
+ * Swapping two corners of every triangle reverses handedness. The NORMAL
+ * attribute must be negated too — it was exported already-flipped, so leaving
+ * it would light the now-correct surface as though it still faced inward.
+ */
+export function reverseWinding(index, normal) {
+  for (let i = 0; i < index.length; i += 3) {
+    const t = index[i + 1];
+    index[i + 1] = index[i + 2];
+    index[i + 2] = t;
+  }
+  if (normal) for (let i = 0; i < normal.length; i++) normal[i] = -normal[i];
+}
+
+/**
+ * Detect and repair a mirrored stone. Returns true if it was flipped.
+ *
+ * SELF-DETECTING and conservative: a correctly-authored stone has positive
+ * volume and is left untouched, so this is a no-op on a clean re-export and
+ * cannot damage a good file. Open shells are skipped rather than guessed at —
+ * signed volume is meaningless on them.
+ */
+export function fixMirroredStone(geometry) {
+  const pos = geometry.attributes.position?.array;
+  const index = geometry.index?.array;
+  const normal = geometry.attributes.normal?.array;
+  if (!pos || !index) return false;
+  if (!isWatertight(pos, index)) return false;
+  if (signedVolume(pos, index) >= 0) return false;
+  reverseWinding(index, normal);
+  return true;
+}
