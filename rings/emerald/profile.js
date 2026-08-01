@@ -226,6 +226,105 @@ export default {
     // /** Ring size the per-size ramp starts from. Below this it contributes 0. */
     pillarThickenFromSize: 5.0,
 
+    /**
+     * ============================================================
+     * FREEZE THE BEAD PRONGS ABOVE A RING SIZE
+     * ============================================================
+     * The four bead prongs that grip the pillar between the 2nd and 3rd
+     * accent stones (counting down from the head): object_24/25 on the right
+     * shoulder, object_36/37 on the left — two per side, front and back,
+     * all centred at Z 10.05 in the gap between accent #2 (Z 10.03-11.25)
+     * and accent #3 (Z 8.79-9.94).
+     *
+     * They sit ON the pillars, so every per-vertex transform the pillars get
+     * — the radial sizing offset, the head blend, the carat bend — was also
+     * fanning these apart. Each is a compact block whose vertices span real
+     * differences in radius and angle, so a transform that only preserves a
+     * thin band's cross-section visibly stretches them.
+     *
+     * Above `rigidAboveSize` each one is instead translated as a single rigid
+     * piece: one offset taken at its own centroid, applied to every vertex.
+     * It still travels with the pillar and still follows the carat bend, but
+     * its own shape is exactly as modelled. At or below the threshold the
+     * behaviour is completely unchanged.
+     */
+    rigidAboveSize: 6.5,
+    rigidAbovePartsMM: ['object_24', 'object_25', 'object_36', 'object_37'],
+
+    /**
+     * ============================================================
+     * PRONG SLIDE PER RING SIZE  <-- CHANGE THIS ONE
+     * ============================================================
+     * How far each frozen prong slides DOWN the shoulder — toward the third
+     * accent below it — for every ring-size step past rigidAboveSize.
+     *
+     * The slider steps in 0.5 US (RING_SIZE.STEP), so this is mm per
+     * half-size. 0 = off, the prongs just sit frozen where they are.
+     *
+     *   0.00  no slide
+     *   0.02  subtle
+     *   0.05  clear
+     *   0.10  strong
+     *
+     * For scale: at the master size the prong sits 0.878 mm from the accent
+     * below it, and US 6.5 -> 13 is 13 steps, so 0.067 would close the whole
+     * gap. Values well under that are the useful range.
+     *
+     * The direction is worked out per part at runtime (see slideDirs in
+     * src/Ring.jsx) — from each prong's own centroid to the nearest accent
+     * below it on the same shoulder — so both sides slide correctly and
+     * nothing is hardcoded. Only applies above rigidAboveSize; at or below
+     * it the prongs are untouched.
+     */
+    rigidSlidePerSizeMM: 0.02,
+
+    /**
+     * ============================================================
+     * ACCENT SLIDE PER RING SIZE  <-- CHANGE THIS ONE
+     * ============================================================
+     * Moves the 2nd accent stone on each shoulder DOWN toward the 3rd accent
+     * below it, by this many mm per ring-size step past `rigidAboveSize`
+     * (6.5). Same threshold and same per-half-size stepping as the prong
+     * slide above, but its own value so the stone and the prongs beside it
+     * can be tuned independently.
+     *
+     *   0.00  no slide (default)
+     *   0.02  subtle
+     *   0.05  clear
+     *   0.10  strong
+     *
+     * For scale: accent #2 sits 1.75 mm from accent #3, and US 6.5 -> 13 is
+     * 13 steps, so 0.135 would close the whole gap. Stay well under that.
+     *
+     * This is a pure TRANSLATION — the stone keeps its exact girdle at every
+     * size, it only changes where it sits.
+     */
+    accentSlidePerSizeMM: 0.05,
+    /**
+     * Which accents move, by rank down each shoulder from the head: 2 = the
+     * second stone from the top, on BOTH sides. Ranks are used because every
+     * accent shares the node name `Diamond_Round`, so names cannot single one
+     * out. Add more ranks to move more stones, e.g. [2, 3].
+     */
+    accentSlideRanks: [2],
+    /**
+     * How far around each sliding accent the SEAT (the bezel hole in the
+     * pillar) is dragged along with it, in mm. 0 = off, the stone moves but
+     * the hole stays behind.
+     *
+     * The hole is not its own object — it is 593 of object_9's 4917 vertices,
+     * cut into the pillar shell — so it can only move by displacing those
+     * vertices. Everything within this radius of the stone's seat takes the
+     * stone's offset, smoothly fading to nothing at the edge, so the hole
+     * travels as one piece and the pillar around it does not move.
+     *
+     * Keep this UNDER the spacing to the neighbouring seats or their holes
+     * get dragged too: measured 1.673 mm up to accent #1 and 1.745 mm down
+     * to accent #3. 1.2 covers the hole (659 verts) with margin on both
+     * sides. Only active while accentSlidePerSizeMM is non-zero.
+     */
+    accentSeatRadiusMM: 1.9,
+
     tableZ: 14.594,
     minZ: 8.961,
     maxZ: 15.468,

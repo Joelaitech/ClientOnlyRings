@@ -170,6 +170,66 @@ export default function Ring({ profile, config }) {
   }, [headParts]);
 
   /**
+   * Unit direction from a part toward the nearest ACCENT BELOW it on the same
+   * shoulder — the way that part slides down the pavé row as the ring grows.
+   *
+   * Keyed by the part OBJECT, not by name: every accent in these models is
+   * called `Diamond_Round`, so a name map could not tell the 2nd stone from
+   * the 8th. Derived once from the pristine meshes, so each shoulder gets its
+   * own correctly mirrored vector with nothing hardcoded.
+   */
+  const slideDirs = useMemo(() => {
+    const dirs = new Map();
+    const accents = shankParts.filter((p) => p.isStone).map((p) => p.centroid);
+    if (!accents.length) return dirs;
+
+    for (const p of shankParts) {
+      let best = null;
+      let bestD = Infinity;
+      for (const a of accents) {
+        // Same shoulder (same side of the ring face) and strictly below.
+        if (Math.sign(a.x) !== Math.sign(p.centroid.x)) continue;
+        if (a.z >= p.centroid.z) continue;
+        const d = Math.hypot(a.x - p.centroid.x, a.z - p.centroid.z);
+        if (d < bestD) { bestD = d; best = a; }
+      }
+      if (!best) continue;
+      const dx = best.x - p.centroid.x;
+      const dz = best.z - p.centroid.z;
+      const len = Math.hypot(dx, dz);
+      if (len > 1e-6) dirs.set(p, { x: dx / len, z: dz / len });
+    }
+    return dirs;
+  }, [shankParts]);
+
+  /**
+   * The accent stones the profile wants slid, by their RANK DOWN EACH
+   * SHOULDER — `accentSlideRanks: [2]` means the 2nd stone from the head on
+   * both the left and the right, which is the only way to name them given
+   * they all share the `Diamond_Round` node name.
+   *
+   * Held as a Set of part objects so the render loop is a cheap identity
+   * lookup rather than a re-sort per slider move.
+   */
+  const accentSlideSet = useMemo(() => {
+    const ranks = profile.head.accentSlideRanks ?? [];
+    const set = new Set();
+    if (!ranks.length) return set;
+
+    const stones = shankParts.filter((p) => p.isStone);
+    for (const side of [1, -1]) {
+      const column = stones
+        .filter((p) => Math.sign(p.centroid.x) === side)
+        .sort((a, b) => b.centroid.z - a.centroid.z);
+      for (const rank of ranks) {
+        const hit = column[rank - 1];
+        if (hit) set.add(hit);
+      }
+    }
+    return set;
+  }, [shankParts, profile.head.accentSlideRanks]);
+
+  /**
    * These geometries are clones this component owns, so it must free them.
    * Without this, every ring switch would leak a full set of GPU buffers —
    * ~190k vertices for the emerald shank alone.
@@ -311,14 +371,154 @@ export default function Ring({ profile, config }) {
     const sizeSteps = Math.max(0, (ringSize - fromSize) / RING_SIZE.STEP);
     const thickenMM = (profile.head.pillarThickenMM ?? 0) + perSize * sizeSteps;
 
+    /**
+     * RIGID-ABOVE-SIZE PARTS — small details that ride the shank but must not
+     * be reshaped by it.
+     *
+     * deformMetal pushes each vertex a fixed distance along its OWN radius.
+     * That preserves the cross-section of something radially thin like the
+     * band, but a compact detail sitting on a pillar has vertices at
+     * meaningfully different radii and angles, so they fan apart as the ring
+     * grows and the detail visibly stretches. On the emerald these are the
+     * bead prongs between the 2nd and 3rd accents (object_24/25/36/37): they
+     * are welded to the pillar, so they move with it, but their own shape is
+     * a fixed piece of metalwork that a bench jeweller would never stretch.
+     *
+     * Above `rigidAboveSize` they get ONE offset derived from their centroid
+     * and applied to every vertex — a pure translation, so the part still
+     * travels with the pillar but its shape is frozen exactly as modelled.
+     * At or below the threshold nothing changes at all.
+     */
+    const rigidParts = profile.head.rigidAbovePartsMM ?? [];
+    const rigidFrom = profile.head.rigidAboveSize ?? null;
+    const rigidActive = rigidFrom != null && ringSize > rigidFrom + 1e-9;
+    /**
+     * SLIDE the frozen prongs down the shoulder as the ring grows.
+     *
+     * Sizing spreads the accents apart along the shoulder arc, so a prong
+     * that is frozen in place drifts out of the gap it was set into. This
+     * walks it back toward the NEXT ACCENT BELOW by
+     * `rigidSlidePerSizeMM` for every RING_SIZE.STEP past `rigidAboveSize`.
+     *
+     * The direction is derived per part at runtime, from that part's own
+     * centroid to the nearest accent centroid below it, so the left and
+     * right shoulders each get their own correct vector and nothing has to
+     * be hardcoded. Measured on object_24: the target sits 0.878 mm away
+     * along (0.6275, -0.7787), which is distinctly NOT the tangential
+     * direction (0.9047, -0.4260) — the accent row climbs faster than the
+     * arc does, so sliding along the arc would miss it.
+     */
+    const slidePerStep = profile.head.rigidSlidePerSizeMM ?? 0;
+    const slideSteps = rigidActive
+      ? Math.max(0, (ringSize - rigidFrom) / RING_SIZE.STEP)
+      : 0;
+    /**
+     * Same idea for the ACCENT STONES named by `accentSlideRanks`, on its own
+     * per-step amount so a stone and the prongs beside it can be tuned apart.
+     * Shares `rigidAboveSize` as the threshold, so both start moving together.
+     */
+    const accentSlidePerStep = profile.head.accentSlidePerSizeMM ?? 0;
+
+    /**
+     * DRAG THE SEAT WITH THE STONE.
+     *
+     * The bezel hole under each accent is not its own object — it is a set of
+     * vertices cut into the pillar shell (measured: 593 of object_9's 4917
+     * belong to the accent-#2 seat). So it cannot be translated as a part; the
+     * only way to move it is to displace those vertices inside the pillar.
+     *
+     * Each entry is one moving stone: where its seat sits in PRISTINE model
+     * space, and the offset it is about to take. Metal vertices near that
+     * point get the same offset, weighted by a smooth falloff so the hole
+     * travels with the stone and the surrounding pillar stays put.
+     *
+     * `accentSeatRadiusMM` is the falloff radius. It must stay under the
+     * spacing to the neighbouring seats — measured 1.673 mm up to accent #1
+     * and 1.745 mm down to accent #3 — or moving one stone would drag its
+     * neighbours' holes too.
+     */
+    const seatRadius = profile.head.accentSeatRadiusMM ?? 0;
+    const seatDrags = [];
+    if (accentSlidePerStep && slideSteps && seatRadius > 0) {
+      for (const s of accentSlideSet) {
+        const dir = slideDirs.get(s);
+        if (!dir) continue;
+        const move = accentSlidePerStep * slideSteps;
+        seatDrags.push({
+          x: s.centroid.x,
+          z: s.centroid.z,
+          dx: dir.x * move,
+          dz: dir.z * move,
+        });
+      }
+    }
+
     for (const p of shankParts) {
       const attr = p.geometry.attributes.position;
       const target = attr.array;
 
-      if (p.isStone) {
+      const keepRigid = !p.isStone && rigidActive && rigidParts.includes(p.name);
+
+      if (keepRigid) {
+        /**
+         * Frozen shape: the radial offset for THIS part is evaluated once at
+         * its centroid, exactly as deformStoneRigid does for a gemstone, and
+         * every vertex gets that same translation. Y still takes the width
+         * scale so the band-width control keeps working on it.
+         *
+         * Deliberately does NOT `continue` — the passes further down
+         * (blendShankToHead, the carat bend, the hinge) still have to run.
+         * These prongs sit at Z 10.05, inside the blend ramp that keeps the
+         * upper shank tracking the head, so skipping it would leave them
+         * behind as the ring grows. Only the SIZING step is swapped here.
+         */
+        deformStoneRigid(p.base, target, p.centroid, delta, boreZ);
+        for (let i = 1; i < target.length; i += 3) target[i] = p.base[i] * widthScale;
+
+        // Walk it down the shoulder toward the accent below, so it keeps its
+        // place in the gap as sizing spreads the accent row apart.
+        const dir = slideDirs.get(p);
+        if (slidePerStep && slideSteps && dir) {
+          const move = slidePerStep * slideSteps;
+          for (let i = 0; i < target.length; i += 3) {
+            target[i] += dir.x * move;
+            target[i + 2] += dir.z * move;
+          }
+        }
+
+        if (pillarBend && !bendSkip.includes(p.name)) {
+          /**
+           * The carat bend still applies, but through the STONE path — one
+           * offset from the centroid, translated rigidly — so the prong
+           * follows the pillar inward without being reshaped by it. Using
+           * the per-vertex bendPillarToHead here would undo the freeze.
+           */
+          bendStoneToHead(
+            target, p.centroid, seat, full, caratScale, bendFromZ, bulgeMM,
+            holdScale, holdFullZ
+          );
+        }
+      } else if (p.isStone) {
         // Stones ignore widthScale — they keep their size and stay centred
         // on Y = 0 however wide the band gets.
         deformStoneRigid(p.base, target, p.centroid, delta, boreZ);
+
+        /**
+         * Slide the accents named by `accentSlideRanks` down toward the stone
+         * below them, on the same threshold the prongs use. A translation, so
+         * the stone keeps its exact girdle — never a scale.
+         */
+        if (accentSlidePerStep && slideSteps && accentSlideSet.has(p)) {
+          const dir = slideDirs.get(p);
+          if (dir) {
+            const move = accentSlidePerStep * slideSteps;
+            for (let i = 0; i < target.length; i += 3) {
+              target[i] += dir.x * move;
+              target[i + 2] += dir.z * move;
+            }
+          }
+        }
+
         if (pillarBend && !bendSkip.includes(p.name)) {
           // Accents above the seat (the topmost pavé, nearest the head) ride
           // with the head's carat scale too, so they stay flush against the
@@ -330,6 +530,29 @@ export default function Ring({ profile, config }) {
         }
       } else {
         deformMetal(p.base, target, delta, widthScale, boreZ);
+
+        /**
+         * Carry the bezel hole along with its stone. Weighted by distance
+         * from the seat in PRISTINE space — full offset at the seat centre,
+         * easing to nothing by `seatRadius` — so the hole moves as one with
+         * the stone while the pillar around it is untouched.
+         */
+        if (seatDrags.length) {
+          for (const s of seatDrags) {
+            for (let i = 0; i < target.length; i += 3) {
+              const ddx = p.base[i] - s.x;
+              const ddz = p.base[i + 2] - s.z;
+              const d = Math.hypot(ddx, ddz);
+              if (d >= seatRadius) continue;
+              // smoothstep from 1 at the centre to 0 at the radius
+              const t = 1 - d / seatRadius;
+              const w = t * t * (3 - 2 * t);
+              target[i] += s.dx * w;
+              target[i + 2] += s.dz * w;
+            }
+          }
+        }
+
         if (pillarBend && !bendSkip.includes(p.name)) {
           // Shank metal above the seat — the pillars and the claws that carry
           // the topmost accents — bends with carat so it keeps meeting the
@@ -360,7 +583,10 @@ export default function Ring({ profile, config }) {
       blendShankToHead(
         p.base, target, delta, boreZ, headOffset.x, headOffset.z,
         blendFromZ, blendFullZ,
-        p.isStone ? p.centroid : null
+        // Frozen parts take the rigid path too — the blend is another
+        // per-vertex radial transform, so letting it run normally would
+        // reshape exactly what the freeze is protecting.
+        (p.isStone || keepRigid) ? p.centroid : null
       );
 
       /**
@@ -465,7 +691,7 @@ export default function Ring({ profile, config }) {
       p.geometry.computeBoundingSphere();
     }
   }, [shankParts, delta, ringSize, shankWidth, carat, profile, boreZ,
-      headOffset, blendFromZ, blendFullZ,
+      headOffset, blendFromZ, blendFullZ, slideDirs, accentSlideSet,
       bend, bendAmount, hinge, hingeAmount]);
 
   // --- CARAT: deform the head ---------------------------------------------
