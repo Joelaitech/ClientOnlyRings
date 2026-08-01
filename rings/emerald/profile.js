@@ -108,8 +108,124 @@ export default {
      * there is plenty of shoulder to sweep the curve across instead.
      */
     pillarBendZ: 6.5,
-    /** Outward bow at the bend's midpoint, at the minimum carat. */
-    pillarBulgeMM: 0.5,
+    /**
+     * Outward bow at the bend's midpoint, at the minimum carat.
+     *
+     * 1.4, raised from 0.5: the scale floor below stops the lower pillar
+     * sagging FURTHER, but the bow is what actually carries it back outward.
+     * Measured on object_9 at 0.25 ct, mid-run x at Z 7.8/9.0 goes
+     * 5.67/3.80 (bow 0.5) -> 5.86/3.93 (bow 1.4), against the 0.50 ct
+     * reference of 5.70/4.01 — so the mid-section lands essentially back on
+     * the shape that already reads correctly. The bow is 0 at both ends of
+     * the ramp by construction, so the tip stays welded at x 1.61 at every
+     * value tried, and it scales with (1 - scale), so the 1.00 ct master is
+     * untouched.
+     */
+    pillarBulgeMM: 1.4,
+    /**
+     * The plain inner band arch — NOT part of the pillar, but it passes
+     * through the same height range, so the height-selected bend was catching
+     * it and moving it up to 0.47 mm at 0.25 ct.
+     *
+     * Identified by radius from the bore rather than by height, which is what
+     * actually separates the two structures: these sit at r 7.8-9.0 (the bore
+     * is 7.80, so they ARE the band) while the pillars object_8/object_9 sit
+     * at r 8.8-10.5 outside them. Listing them here keeps the band on its
+     * pristine ring-size-only shape at every carat.
+     */
+    pillarBendSkipParts: ['object_7', 'object_30', 'object_33'],
+    /**
+     * HOLD THE LOWER PILLAR — stop it sagging toward the band at 0.25 ct.
+     *
+     * The bend's depth is driven by carat alone, so as the slider fell the
+     * WHOLE pillar kept pulling inward at the same rate — but only its tip
+     * actually touches the head. Measured on object_9, 0.50 -> 0.25 ct, the
+     * mid-section (Z 7.2-9.6) pulled inward another 0.69 mm while the tip
+     * moved only 0.42 mm: the part that was not attached to anything moved
+     * further than the part that was, which is exactly the "pillars bent too
+     * far toward the band" report. At 0.50 ct the same bend reads correctly,
+     * so the shape to preserve is the one it already has there.
+     *
+     * These clamp the scale the bend may see LOW on the pillar to its 0.50 ct
+     * value, releasing smoothly into the true carat by Z 13.06 (the pillar's
+     * own measured top) so the weld still lands exactly on the head. Swept
+     * against the 0.50 ct reference profile: worst low-run deviation falls
+     * 0.692 -> 0.350 mm, with the tip unchanged at x 1.61.
+     *
+     * The floor is 0.50 and not a deeper hold (0.75 measured better on paper,
+     * 0.180 mm) because the clamp is inert only at and above its own carat:
+     * a 0.75 floor would have altered the 0.50 ct render too, and 0.50 is the
+     * shape being matched, not one to change. Above 0.50 ct every vertex is
+     * bit-identical to before this existed — verified, max delta 0.000000.
+     *
+     * pillarHoldFullZ is capped at the pillar's measured top: pushing the
+     * release higher keeps improving the low run (0.237 mm at 15.0) but drags
+     * the tip off the head with it (x 1.61 -> 1.67), reopening the joint this
+     * whole mechanism exists to close.
+     *
+     * Raising pillarBendZ was tried first and made it worse (0.87 mm, and it
+     * turned the sweep into a cliff) — starting later just crams the same
+     * total correction into less height.
+     */
+    pillarHoldCarat: 1.00,
+    pillarHoldFullZ: 15.06,
+
+    /**
+     * ============================================================
+     * PILLAR THICKNESS  <-- CHANGE THIS ONE
+     * ============================================================
+     * How much radial thickness to ADD to the pillars, in mm, from the bend
+     * point up toward the head. 0 = off (the shipped mesh, unchanged).
+     *
+     *   0.0  master, as modelled
+     *   0.2  subtle
+     *   0.4  clearly chunkier
+     *   0.6+ heavy
+     *
+     * Half goes to the inner face and half to the outer, so the pillar's
+     * centreline stays put and only its cross-section grows.
+     *
+     * This is SEPARATE from the bend on purpose. The bend is a scale about the
+     * ring axis, which multiplies each vertex by its own x — so the outer face
+     * travels further than the inner one and deepening the bend actually THINS
+     * the pillar. No value of pillarBulgeMM or pillarHoldCarat can add metal
+     * back; they only translate. This adds it directly.
+     *
+     * It tapers to zero at the weld: the master pillar is only 0.19 mm thick
+     * where it meets the head (measured on object_9 at Z 13.0), so thickening
+     * there would immediately punch through the basket. Full strength sits
+     * down at pillarBendZ, fading out as it climbs.
+     *
+     * Applies at every carat, not just 0.25 — it is a property of the metal,
+     * not a carat correction.
+     */
+    pillarThickenMM: 0.0,
+
+    /**
+     * ============================================================
+     * PILLAR THICKNESS PER RING SIZE  <-- AND THIS ONE
+     * ============================================================
+     * Extra mm of pillar thickness added for every ring-size STEP above
+     * pillarThickenFromSize. The size slider steps in 0.5 US
+     * (RING_SIZE.STEP), so 0.01 here = +0.01 mm per half-size.
+     *
+     * Adds ON TOP of the flat pillarThickenMM above; that one applies at
+     * every size, this one only above the threshold. 0 = off, flat amount
+     * only.
+     *
+     * Why: a bigger ring stretches the same pillar over a longer arc, so it
+     * reads visually thinner at large sizes even though its cross-section
+     * never actually changed. This compensates. At 0.01/step the whole
+     * US 5 -> 13 range adds 0.16 mm, which is deliberately subtle — raise
+     * it if the taper is still visible at the top of the range.
+     *
+     * Sizes at or below the threshold get nothing, so US 5 and down render
+     * exactly as they do today.
+     */
+    // pillarThickenPerSize: 0.012,
+    // /** Ring size the per-size ramp starts from. Below this it contributes 0. */
+    // pillarThickenFromSize: 5.0,
+
     tableZ: 14.594,
     minZ: 8.961,
     maxZ: 15.468,

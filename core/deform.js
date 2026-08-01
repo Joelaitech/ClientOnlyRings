@@ -496,6 +496,27 @@ export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg
  * untouched; only the carat-driven bend is added. Y is left alone — that is
  * the shank-width axis and must stay independent of carat.
  *
+ * SCALE FLOOR (`holdScale`) — why the lower pillar needs one.
+ * ---------------------------------------------------------------------------
+ * The correction above is `(scale - 1) * w`: `w` shapes it by HEIGHT, but its
+ * magnitude is driven by `scale` alone, so every height keeps deepening at the
+ * same rate as carat falls. On the emerald that is right at the top (the weld
+ * must track the head, which really is shrinking) and wrong lower down: the
+ * shoulder there does not touch the head at all, so it just sags toward the
+ * band. Measured on object_9, going 0.50 -> 0.25 ct, the pillar's mid-section
+ * pulled inward another 0.69 mm at Z 7.2-9.6 while the top moved 0.42 mm — the
+ * lower shoulder moved MORE than the tip it was supposed to be following.
+ *
+ * Raising `bendFromZ` does not fix it: starting later crams the same total
+ * correction into less height, which measured WORSE (0.87 mm of low drift) and
+ * turned the smooth sweep into a cliff at the start of the ramp.
+ *
+ * So `holdScale` clamps the scale the bend below `holdFullZ` is allowed to see,
+ * while the weld at `fullAtZ` still uses the true `scale`. Between the two the
+ * clamp releases smoothly, so the pillar keeps bending toward the head at its
+ * tip while its lower run holds the shape it had at the held carat. Unset, the
+ * clamp is inert and this behaves exactly as before for every other ring.
+ *
  * @param {Float32Array} base    pristine shank-metal positions
  * @param {Float32Array} target  buffer already written by deformMetal
  * @param {number} seatZ         head's seat plane — the Z pivot for the contact scale
@@ -503,10 +524,74 @@ export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg
  * @param {number} scale         carat linear scale, same value passed to deformHead
  * @param {number} [bendFromZ]   height where the visible bend starts easing in; default seatZ
  * @param {number} [bulgeMM]     outward bow at the ramp's midpoint, at scale -> 0; default 0
+ * @param {number} [holdScale]   floor on the scale the LOW pillar may see; null = no clamp
+ * @param {number} [holdFullZ]   height where the clamp has fully released into
+ *   the true `scale`; below it the clamp is at full strength. Default fullAtZ.
+ * @param {number} [thickenMM]   grow the pillar's radial THICKNESS by this much.
+ *   Independent of the bend: it pushes each vertex along its own radius, away
+ *   from the pillar's local mid-radius AT ITS OWN HEIGHT, so the inner face
+ *   moves in and the outer face moves out by half this each. Tapers to 0 at
+ *   the weld so it cannot punch through the basket. 0 = off.
+ * @param {number} [boreCenterZ] bore centre Z — the radius origin for thickening.
  */
-export function bendPillarToHead(base, target, seatZ, fullAtZ, scale, bendFromZ = seatZ, bulgeMM = 0) {
+export function bendPillarToHead(
+  base, target, seatZ, fullAtZ, scale, bendFromZ = seatZ, bulgeMM = 0,
+  holdScale = null, holdFullZ = null,
+  thickenMM = 0, boreCenterZ = 0
+) {
   const span = fullAtZ - bendFromZ;
   const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  // The clamp is only meaningful while the true scale is below the floor.
+  const clamping = holdScale != null && scale < holdScale;
+  const releaseTo = holdFullZ ?? fullAtZ;
+  const releaseSpan = releaseTo - bendFromZ;
+
+  /**
+   * THICKNESS NEEDS THE PILLAR'S OWN CENTRELINE, PER HEIGHT.
+   *
+   * A single constant mid-radius does not work: measured on the emerald's
+   * object_9 the pillar's mid-radius climbs from ~9.4 at Z 6.5 to ~13.1 at
+   * the tip, so any fixed value puts most of the pillar entirely on one side
+   * of the split — the whole cross-section then translates instead of
+   * expanding, and the measured thickness barely moves (and inverts where the
+   * constant lands outside the metal).
+   *
+   * So bin the pristine vertices by height first and take each bin's own
+   * mid-radius. One extra pass over `base`, only when thickening is on.
+   */
+  const thickening = thickenMM !== 0;
+  const BIN = 0.25;
+  let binMid = null;
+  let binMinZ = 0;
+  let thickenTopZ = 0;
+  if (thickening) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < base.length; i += 3) {
+      const z = base[i + 2];
+      if (z < lo) lo = z;
+      if (z > hi) hi = z;
+    }
+    binMinZ = lo;
+    // This part's own top — where it meets the head. Taken from the mesh so
+    // no profile value has to track it, and so a part that stops short of the
+    // weld fades out at its own end rather than somewhere in mid-air.
+    thickenTopZ = hi;
+    const count = Math.max(1, Math.ceil((hi - lo) / BIN) + 1);
+    const rMin = new Float64Array(count).fill(Infinity);
+    const rMax = new Float64Array(count).fill(-Infinity);
+    for (let i = 0; i < base.length; i += 3) {
+      const b = Math.min(count - 1, Math.floor((base[i + 2] - lo) / BIN));
+      const r = Math.hypot(base[i], base[i + 2] - boreCenterZ);
+      if (r < rMin[b]) rMin[b] = r;
+      if (r > rMax[b]) rMax[b] = r;
+    }
+    binMid = new Float64Array(count);
+    for (let b = 0; b < count; b++) {
+      binMid[b] = rMax[b] >= rMin[b] ? (rMin[b] + rMax[b]) / 2 : NaN;
+    }
+  }
 
   for (let i = 0; i < base.length; i += 3) {
     const x = base[i];
@@ -516,13 +601,69 @@ export function bendPillarToHead(base, target, seatZ, fullAtZ, scale, bendFromZ 
     const t = span <= 0 ? 1 : Math.min(1, (z - bendFromZ) / span);
     const w = smoothstep(t);
 
-    target[i] += x * (scale - 1) * w;
-    target[i + 2] += (z - seatZ) * (scale - 1) * w;
+    /**
+     * Blend from the held floor up to the true scale by height, so the weld
+     * still lands exactly on the head while the lower run stays put.
+     */
+    let s = scale;
+    if (clamping) {
+      const r = releaseSpan <= 0 ? 1 : Math.min(1, Math.max(0, (z - bendFromZ) / releaseSpan));
+      s = holdScale + (scale - holdScale) * smoothstep(r);
+    }
+
+    target[i] += x * (s - 1) * w;
+    target[i + 2] += (z - seatZ) * (s - 1) * w;
 
     if (bulgeMM) {
       const bow = 4 * t * (1 - t); // 0 at both ends, 1 at the ramp's midpoint
       const dir = x >= 0 ? 1 : -1;
-      target[i] += dir * bulgeMM * bow * (1 - scale);
+      target[i] += dir * bulgeMM * bow * (1 - s);
+    }
+
+    /**
+     * THICKNESS. Deliberately NOT a scale about the ring axis — that is what
+     * the bend above does, and because it multiplies each vertex by its own x
+     * the outer face travels further than the inner one, so deepening the bend
+     * actually THINS the pillar. There is no value of bulge/hold that can add
+     * material back, because both only translate.
+     *
+     * So this pushes each vertex along its own radius, away from the pillar's
+     * local mid-radius: outer face out by half, inner face in by half, giving
+     * `thickenMM` total. Applied on the PRISTINE radius (from `base`) so the
+     * split stays symmetric no matter how far the bend has already moved the
+     * vertex, then added as a plain offset on top of whatever the bend wrote.
+     *
+     * Tapered by (1 - t) so it is full strength where the bend starts and zero
+     * at the weld — the tip must stay exactly where the head expects it, and
+     * the master pillar is only 0.19 mm thick there anyway, so thickening it
+     * would immediately punch through the basket.
+     */
+    if (thickening) {
+      const dx = x;
+      const dz = z - boreCenterZ;
+      const r = Math.hypot(dx, dz);
+      const mid = binMid[Math.min(binMid.length - 1, Math.floor((z - binMinZ) / BIN))];
+      if (r > 1e-6 && Number.isFinite(mid)) {
+        /**
+         * Tapered against the PILLAR'S OWN TOP, not the bend's `fullAtZ`.
+         * On the emerald fullAtZ is 9.5 while the pillar runs to 13.06, so
+         * reusing the bend's ramp faded the thickness out less than halfway
+         * up — the whole span from the bend to the weld, which is exactly the
+         * stretch that needed thickening, got nothing.
+         *
+         * Full strength from bendFromZ, easing to 0 over the last `FADE` mm
+         * so the tip still lands on the head unchanged.
+         */
+        const FADE = 1.5;
+        const fadeStart = thickenTopZ - FADE;
+        let taper = 1;
+        if (z >= thickenTopZ) taper = 0;
+        else if (z > fadeStart) taper = 1 - smoothstep((z - fadeStart) / FADE);
+
+        const push = (r >= mid ? 0.5 : -0.5) * thickenMM * taper;
+        target[i] += (dx / r) * push;
+        target[i + 2] += (dz / r) * push;
+      }
     }
   }
 }
@@ -544,8 +685,13 @@ export function bendPillarToHead(base, target, seatZ, fullAtZ, scale, bendFromZ 
  * @param {number} scale
  * @param {number} [bendFromZ]  see bendPillarToHead; default seatZ
  * @param {number} [bulgeMM]    see bendPillarToHead; default 0
+ * @param {number} [holdScale]  see bendPillarToHead; null = no clamp
+ * @param {number} [holdFullZ]  see bendPillarToHead; default fullAtZ
  */
-export function bendStoneToHead(target, centroid, seatZ, fullAtZ, scale, bendFromZ = seatZ, bulgeMM = 0) {
+export function bendStoneToHead(
+  target, centroid, seatZ, fullAtZ, scale, bendFromZ = seatZ, bulgeMM = 0,
+  holdScale = null, holdFullZ = null
+) {
   const z = centroid.z;
   if (z <= bendFromZ) return;
 
@@ -554,13 +700,23 @@ export function bendStoneToHead(target, centroid, seatZ, fullAtZ, scale, bendFro
   const t = span <= 0 ? 1 : Math.min(1, (z - bendFromZ) / span);
   const w = smoothstep(t);
 
-  let dx = centroid.x * (scale - 1) * w;
-  const dz = (z - seatZ) * (scale - 1) * w;
+  // Same height-blended scale floor the metal uses, evaluated once at the
+  // stone's own height so it rides with the shoulder it is set into.
+  let s = scale;
+  if (holdScale != null && scale < holdScale) {
+    const releaseTo = holdFullZ ?? fullAtZ;
+    const releaseSpan = releaseTo - bendFromZ;
+    const r = releaseSpan <= 0 ? 1 : Math.min(1, Math.max(0, (z - bendFromZ) / releaseSpan));
+    s = holdScale + (scale - holdScale) * smoothstep(r);
+  }
+
+  let dx = centroid.x * (s - 1) * w;
+  const dz = (z - seatZ) * (s - 1) * w;
 
   if (bulgeMM) {
     const bow = 4 * t * (1 - t);
     const dir = centroid.x >= 0 ? 1 : -1;
-    dx += dir * bulgeMM * bow * (1 - scale);
+    dx += dir * bulgeMM * bow * (1 - s);
   }
 
   for (let i = 0; i < target.length; i += 3) {

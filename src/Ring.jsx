@@ -11,7 +11,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import * as THREE from 'three';
 
-import { METALS, DIAMOND, CARAT, SHANK_WIDTH } from '../core/standards.js';
+import { METALS, DIAMOND, CARAT, SHANK_WIDTH, RING_SIZE } from '../core/standards.js';
 import {
   deformMetal, deformStoneRigid, deformHead, blendShankToHead,
   bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
@@ -277,6 +277,39 @@ export default function Ring({ profile, config }) {
       && (pillarBendAll || carat <= CARAT.MIN + 1e-6);
     const bendFromZ = profile.head.pillarBendZ ?? seat;
     const bulgeMM = profile.head.pillarBulgeMM ?? 0;
+    /**
+     * Optional floor on how deep the bend may get LOW on the pillar, with the
+     * weld at the top still tracking the true carat. Without it the lower
+     * shoulder — which never touches the head — keeps sagging toward the band
+     * as carat falls. See bendPillarToHead in core/deform.js.
+     */
+    const holdScale = profile.head.pillarHoldCarat != null
+      ? CARAT.scale(profile.head.pillarHoldCarat, profile.master.carat)
+      : null;
+    const holdFullZ = profile.head.pillarHoldFullZ ?? null;
+    /**
+     * Parts the pillar bend must NOT touch. The bend selects purely by height
+     * (everything above pillarBendZ), which also catches structures that
+     * merely pass through that band without being part of the pillar — on the
+     * emerald, the plain inner band arch. Naming them here keeps them on their
+     * pristine ring-size-only shape at every carat.
+     */
+    const bendSkip = profile.head.pillarBendSkipParts ?? [];
+    /**
+     * Radial thickness added to the pillars. Separate from the bend: the bend
+     * only moves the pillar, and because it is a scale about the ring axis it
+     * actually thins it as it deepens. See bendPillarToHead in core/deform.js.
+     *
+     * On top of the flat amount, an optional RING-SIZE RAMP: a bigger ring
+     * stretches the same pillar over a longer arc, so it reads thinner at
+     * large sizes even though its cross-section never changed. The ramp adds
+     * `pillarThickenPerSize` mm for every RING_SIZE.STEP above
+     * `pillarThickenFromSize`, and contributes nothing at or below it.
+     */
+    const perSize = profile.head.pillarThickenPerSize ?? 0;
+    const fromSize = profile.head.pillarThickenFromSize ?? profile.master.ringSize;
+    const sizeSteps = Math.max(0, (ringSize - fromSize) / RING_SIZE.STEP);
+    const thickenMM = (profile.head.pillarThickenMM ?? 0) + perSize * sizeSteps;
 
     for (const p of shankParts) {
       const attr = p.geometry.attributes.position;
@@ -286,19 +319,25 @@ export default function Ring({ profile, config }) {
         // Stones ignore widthScale — they keep their size and stay centred
         // on Y = 0 however wide the band gets.
         deformStoneRigid(p.base, target, p.centroid, delta, boreZ);
-        if (pillarBend) {
+        if (pillarBend && !bendSkip.includes(p.name)) {
           // Accents above the seat (the topmost pavé, nearest the head) ride
           // with the head's carat scale too, so they stay flush against the
           // shoulder metal instead of floating once it bends inward.
-          bendStoneToHead(target, p.centroid, seat, full, caratScale, bendFromZ, bulgeMM);
+          bendStoneToHead(
+            target, p.centroid, seat, full, caratScale, bendFromZ, bulgeMM,
+            holdScale, holdFullZ
+          );
         }
       } else {
         deformMetal(p.base, target, delta, widthScale, boreZ);
-        if (pillarBend) {
+        if (pillarBend && !bendSkip.includes(p.name)) {
           // Shank metal above the seat — the pillars and the claws that carry
           // the topmost accents — bends with carat so it keeps meeting the
           // head instead of holding still while the head shrinks around it.
-          bendPillarToHead(p.base, target, seat, full, caratScale, bendFromZ, bulgeMM);
+          bendPillarToHead(
+            p.base, target, seat, full, caratScale, bendFromZ, bulgeMM,
+            holdScale, holdFullZ, thickenMM, boreZ
+          );
         }
       }
 
@@ -425,7 +464,7 @@ export default function Ring({ profile, config }) {
       }
       p.geometry.computeBoundingSphere();
     }
-  }, [shankParts, delta, shankWidth, carat, profile, boreZ,
+  }, [shankParts, delta, ringSize, shankWidth, carat, profile, boreZ,
       headOffset, blendFromZ, blendFullZ,
       bend, bendAmount, hinge, hingeAmount]);
 
