@@ -371,6 +371,72 @@ export function bendShoulders(
 }
 
 /**
+ * Stretch the shoulder's reach UPWARD, toward the head, without adding any
+ * new geometry.
+ *
+ * "Make the pillar longer" sounds like it needs new material welded onto the
+ * tip, but every shoulder mesh in this catalogue is a single CLOSED solid
+ * (measured on the pear: object_1 is 4868 verts / 19590 indices, capped at
+ * the tip, not an open shell with a rim to extrude from). Cutting one open
+ * and stitching in new topology blind — no way to render and check the
+ * result here — risks a torn or inside-out mesh that has no visible symptom
+ * until someone opens it in a viewer.
+ *
+ * This gets the same visual result a different way: pure Z motion, so it
+ * cannot thin the pillar. Every vertex keeps its own (x, y) exactly — only
+ * its height changes — so a cross-section's shape at a given moment in the
+ * stretch is identical to its pristine shape, just relocated. Below `fromZ`
+ * nothing moves (still welded to the rest of the shoulder). Between `fromZ`
+ * and `toZ` the extra height ramps in with a smoothstep. At and above `toZ`
+ * every vertex gets the full `extendMM` — a rigid cap riding up as one piece,
+ * so the tip's own shape is exactly preserved, just moved.
+ *
+ * Intended to run BEFORE rotateShoulderTip() in the same pass, so the hinge
+ * then bends the newly-extended reach rather than the original one.
+ *
+ * @param {Float32Array} base    pristine shank-metal positions
+ * @param {Float32Array} target  buffer to modify IN PLACE (already size/width deformed)
+ * @param {number} fromZ         height below which nothing moves
+ * @param {number} toZ           height at which the full extension is reached
+ * @param {number} extendMM      how far the tip moves up, in mm
+ */
+export function extendPillarZ(base, target, fromZ, toZ, extendMM) {
+  if (!extendMM) return;
+  const span = toZ - fromZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z <= fromZ) continue;
+    const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+    target[i + 2] += extendMM * smoothstep(t);
+  }
+}
+
+/**
+ * Rigid counterpart of extendPillarZ() for shank ACCENT STONES — the same
+ * upward stretch, but evaluated once at the stone's centroid and applied as
+ * one translation, so a stone never gets reshaped by it (only ever moved).
+ *
+ * @param {Float32Array} target    buffer already written by deformStoneRigid
+ * @param {{z:number}} centroid    stone centroid in pristine model space
+ * @param {number} fromZ
+ * @param {number} toZ
+ * @param {number} extendMM
+ */
+export function extendStoneZ(target, centroid, fromZ, toZ, extendMM) {
+  if (!extendMM) return;
+  const z = centroid.z;
+  if (z <= fromZ) return;
+  const span = toZ - fromZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+  const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+  const dz = extendMM * smoothstep(t);
+
+  for (let i = 0; i < target.length; i += 3) target[i + 2] += dz;
+}
+
+/**
  * Rotate the shoulder tip RIGIDLY about a fixed pivot, as an alternative to
  * bendShoulders() above.
  *
@@ -723,6 +789,190 @@ export function bendStoneToHead(
     target[i] += dx;
     target[i + 2] += dz;
   }
+}
+
+/**
+ * Build a small solid, tapered box from scratch — used to plug a gap that
+ * only exists because of a profile's OWN custom shoulder adjustments
+ * (shoulderHinge / pillarExtend / bandLift), not something present in any
+ * shipped GLB. There is nothing to extrude from for a gap like that; it has
+ * to be authored as new geometry.
+ *
+ * A box, not a organic patch, because it can be verified by construction: 6
+ * flat quads, checked here to have outward-facing normals (see the winding
+ * comment below), so there is no risk of an inside-out face no matter how
+ * the profile's dimensions are set. That trades sculptural elegance for
+ * certainty that it will render as a solid, lit correctly, filled shape —
+ * the right trade when nobody can view-and-adjust it live.
+ *
+ * Bottom face is centred at (offsetX, 0, baseZ), sized baseWidthX x
+ * baseWidthY. Top face is centred at (offsetX, 0, topZ), sized topWidthX x
+ * topWidthY — independent width/depth top and bottom, so it can taper
+ * (typically narrower at the top, echoing the band's own peak just below
+ * it) or stay a plain prism if top and bottom are set equal.
+ *
+ * @param {object} opts
+ * @param {number} opts.baseWidthX
+ * @param {number} opts.baseWidthY
+ * @param {number} opts.topWidthX
+ * @param {number} opts.topWidthY
+ * @param {number} opts.baseZ
+ * @param {number} opts.topZ
+ * @param {number} [opts.offsetX] X of the box's centre line; 0 = ring axis
+ * @returns {{positions: Float32Array, indices: Uint16Array}}
+ */
+export function buildFillerBox({
+  baseWidthX, baseWidthY, topWidthX, topWidthY, baseZ, topZ, offsetX = 0,
+}) {
+  const bx = baseWidthX / 2, by = baseWidthY / 2;
+  const tx = topWidthX / 2, ty = topWidthY / 2;
+
+  // 8 corners: 0-3 at baseZ (bottom), 4-7 at topZ (top), each ring going
+  // -X-Y, +X-Y, +X+Y, -X+Y.
+  const positions = new Float32Array([
+    -bx + offsetX, -by, baseZ,   bx + offsetX, -by, baseZ,
+     bx + offsetX,  by, baseZ,  -bx + offsetX,  by, baseZ,
+    -tx + offsetX, -ty, topZ,    tx + offsetX, -ty, topZ,
+     tx + offsetX,  ty, topZ,   -tx + offsetX,  ty, topZ,
+  ]);
+
+  /**
+   * Each face as a quad [a,b,c,d], split (a,b,c)(a,c,d). Winding verified
+   * numerically (each face's cross-product normal dotted against the
+   * direction from the box centre to the face centre, all six positive —
+   * i.e. every face point outward) rather than by hand, since hand-deriving
+   * six windings is exactly the kind of thing that silently produces one
+   * inside-out face.
+   */
+  const quads = [
+    [0, 3, 2, 1], // bottom, -Z
+    [4, 5, 6, 7], // top, +Z
+    [0, 1, 5, 4], // front, -Y
+    [3, 7, 6, 2], // back, +Y
+    [0, 4, 7, 3], // left, -X
+    [1, 2, 6, 5], // right, +X
+  ];
+  const indices = new Uint16Array(quads.length * 6);
+  let k = 0;
+  for (const [a, b, c, d] of quads) {
+    indices[k++] = a; indices[k++] = b; indices[k++] = c;
+    indices[k++] = a; indices[k++] = c; indices[k++] = d;
+  }
+
+  return { positions, indices };
+}
+
+/**
+ * FIXED TOPOLOGY for a self-measuring bridge across an arbitrarily-shaped
+ * gap: N cross-sections along X, each a vertical wall from the surface
+ * below to the surface above, swept into one continuous solid. Unlike
+ * buildFillerBox (one box, hand-set dimensions), this is meant to be
+ * measured against the ACTUAL current geometry every time it is drawn — see
+ * sampleArchFillerPositions below — so it keeps fitting even if the
+ * shoulder settings it is bridging (shoulderHinge / pillarExtend / bandLift)
+ * get retuned later.
+ *
+ * The INDEX buffer never changes (same N slices, same wall structure every
+ * time), only the vertex POSITIONS get resampled per render — see
+ * sampleArchFillerPositions. That split is what makes updating this cheap:
+ * rebuild positions on every carat/ring-size change, but the topology (and
+ * its verified winding) is computed once.
+ *
+ * 4 vertices per slice: bottom-front, bottom-back, top-front, top-back
+ * (front/back being the two faces along Y, the ring's thin axis). Faces:
+ * front wall, back wall, top wall, bottom wall (each a strip of quads
+ * between adjacent slices), plus two end caps closing the first and last
+ * slice into a solid.
+ *
+ * @param {number} n  number of X slices (n >= 2)
+ * @returns {Uint16Array} index buffer, verified below for outward winding
+ */
+export function buildArchFillerTopology(n) {
+  const BF = 0, BB = 1, TF = 2, TB = 3; // per-slice vertex roles
+  const vi = (slice, role) => slice * 4 + role;
+  const quads = [];
+
+  for (let s = 0; s < n - 1; s++) {
+    // front wall (-Y face): looking from -Y, CCW is BF(s), BF(s+1), TF(s+1), TF(s)
+    quads.push([vi(s, BF), vi(s + 1, BF), vi(s + 1, TF), vi(s, TF)]);
+    // back wall (+Y face): reversed sense relative to front
+    quads.push([vi(s, BB), vi(s, TB), vi(s + 1, TB), vi(s + 1, BB)]);
+    // top wall (+Z-ish face, the underside of the pillar/head)
+    quads.push([vi(s, TF), vi(s + 1, TF), vi(s + 1, TB), vi(s, TB)]);
+    // bottom wall (-Z-ish face, resting on the band)
+    quads.push([vi(s, BF), vi(s, BB), vi(s + 1, BB), vi(s + 1, BF)]);
+  }
+  // end caps, one at each extreme slice, closing the solid
+  quads.push([vi(0, BF), vi(0, TF), vi(0, TB), vi(0, BB)]);
+  quads.push([vi(n - 1, BF), vi(n - 1, BB), vi(n - 1, TB), vi(n - 1, TF)]);
+
+  const indices = new Uint16Array(quads.length * 6);
+  let k = 0;
+  for (const [a, b, c, d] of quads) {
+    indices[k++] = a; indices[k++] = b; indices[k++] = c;
+    indices[k++] = a; indices[k++] = c; indices[k++] = d;
+  }
+  return indices;
+}
+
+/**
+ * Fill the POSITIONS for buildArchFillerTopology's fixed index buffer, by
+ * measuring the actual gap between two already-deformed part groups at
+ * render time — this is what makes the bridge self-fitting instead of a
+ * hand-set shape.
+ *
+ * For each of `n` evenly-spaced X values across [xMin, xMax]: the BOTTOM
+ * surface's height is the highest Z any `belowParts` vertex reaches within
+ * `xToleranceMM` of that X; the TOP surface's height is the lowest Z any
+ * `aboveParts` vertex reaches there. Where the two are already touching or
+ * overlapping (top <= bottom — the real shoulder contact, outside the gap),
+ * the slice collapses to zero height, so the bridge only has material where
+ * a real gap exists and tapers to nothing at its own edges by construction.
+ *
+ * @param {number} n                  slice count, must match the topology's n
+ * @param {number} xMin
+ * @param {number} xMax
+ * @param {number} xToleranceMM       how wide an X band counts as "at this slice"
+ * @param {number} halfWidthY         half the bridge's Y width (its face-to-face span)
+ * @param {Array<{name:string, target:Float32Array}>} belowParts  e.g. the band
+ * @param {Array<{name:string, target:Float32Array}>} aboveParts  e.g. the pillar
+ * @returns {Float32Array} positions, ready for buildArchFillerTopology(n)'s indices
+ */
+export function sampleArchFillerPositions(
+  n, xMin, xMax, xToleranceMM, halfWidthY, belowParts, aboveParts
+) {
+  const positions = new Float32Array(n * 4 * 3);
+  const step = n > 1 ? (xMax - xMin) / (n - 1) : 0;
+
+  const extremeAt = (parts, x, wantMax) => {
+    let best = wantMax ? -Infinity : Infinity;
+    let found = false;
+    for (const { target } of parts) {
+      for (let i = 0; i < target.length; i += 3) {
+        if (Math.abs(target[i] - x) > xToleranceMM) continue;
+        const z = target[i + 2];
+        if (wantMax ? z > best : z < best) { best = z; found = true; }
+      }
+    }
+    return found ? best : null;
+  };
+
+  for (let s = 0; s < n; s++) {
+    const x = xMin + step * s;
+    const bottomZ = extremeAt(belowParts, x, true);
+    const topZRaw = extremeAt(aboveParts, x, false);
+    // No data at this X for either surface (outside both parts' extent):
+    // collapse to a zero-height sliver at whichever Z is known, or 0.
+    const bZ = bottomZ ?? topZRaw ?? 0;
+    const tZ = topZRaw != null && topZRaw > bZ ? topZRaw : bZ;
+
+    const o = s * 4 * 3;
+    positions[o + 0] = x; positions[o + 1] = -halfWidthY; positions[o + 2] = bZ;  // BF
+    positions[o + 3] = x; positions[o + 4] =  halfWidthY; positions[o + 5] = bZ;  // BB
+    positions[o + 6] = x; positions[o + 7] = -halfWidthY; positions[o + 8] = tZ;  // TF
+    positions[o + 9] = x; positions[o + 10] = halfWidthY; positions[o + 11] = tZ; // TB
+  }
+  return positions;
 }
 
 /** Centroid of a position buffer, in the XZ plane. */

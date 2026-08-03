@@ -1,3 +1,5 @@
+
+
 /**
  * RING PROFILE — pear  (supplier code "01")
  * ============================================================================
@@ -131,43 +133,180 @@ export default {
     scaleFullAtZ: 9.00,
 
     /**
-     * SHOULDER BEND — close the last joint from the SHANK side.
+     * SHOULDER HINGE — close the last joint from the SHANK side, as a RIGID
+     * rotation rather than a curve (see rotateShoulderTip in core/deform.js).
      *
-     * At the bottom of the carat range the basket rail (head object_3) shrinks
-     * away from the shoulder tips. Measured rail-to-shoulder gap:
+     * At the bottom of the carat range the basket rail (head object_3)
+     * shrinks away from the shoulder tips. Measured rail-to-shoulder gap:
      *   1.00 ct  0.017 mm      0.25 ct  0.565 mm
-     * Every other head part stays connected at 0.25 ct (0.09-0.16 mm), so this
-     * one contact is the whole problem.
+     * Every other head part stays connected at 0.25 ct (0.09-0.16 mm), so
+     * this one contact is the whole problem.
      *
-     * Fixing it from the head side is what kept breaking the 0.50-3.00 range,
-     * which is otherwise correct. Bending the SHANK instead cannot regress
-     * anything: the head is untouched, and the correction fades to zero above
-     * `belowCarat`.
+     * This used to be a smooth curve (bendShoulders, scaling each vertex by
+     * its own height). That closes the gap fine, but it has no single
+     * "bend point" to speak of — `fromZ` only sets where a gradient starts
+     * easing in, so there is nothing to point at and move. Replaced with a
+     * rigid rotation instead: below `pivotZ` the shoulder is completely
+     * untouched (still on the plain shell's own shape, still welded to the
+     * band); at and above it, EVERY vertex rotates by the same angle — a
+     * true hinge, so there is exactly one place to look for the bend, and
+     * `pivotZ` IS that place.
      *
-     * Travel was swept against the real mesh at full strength. The straight
-     * point-to-point delta (0.434 in, 0.360 down) undershot, because the tip
-     * has to travel along the rail's curve rather than straight at it:
-     *   in 0.40 down 0.30 -> 0.250 mm      in 0.60 down 0.70 -> 0.039
-     *   in 0.80 down 0.50 -> 0.033         in 0.80 down 0.70 -> 0.023  <- used
+     * pivotZ 9.0 carries over the old fromZ value (already vetted: low
+     * enough to close the joint, where the shoulder naturally starts to
+     * rise) as the starting point for retuning where the visible elbow sits.
+     * pivotXAbs 5.64 is the measured cross-section mid-point of shank
+     * object_1 at that height — everything below stays on the shoulder's own
+     * modelled curve.
      *
-     * `fromZ` is 9.0. It must sit below the contact at Z 11.67 or the moving
-     * band misses it entirely (at 11.0 the gap did not budge from 0.231 mm).
-     * Going lower than strictly necessary also buys a much smoother curve —
-     * measured shoulder curvature, lower is smoother:
-     *   fromZ 10.2 -> 0.383     fromZ 9.0 -> 0.130     fromZ 6.0 -> 0.320
-     * 9.0 gives the smoothest bend while still closing the joint, and it is
-     * where the shoulders naturally start to rise.
-     *
-     * The bore is unaffected at every setting tried — the weight is zero below
-     * fromZ, so the band, bore and lower pavé never move.
+     * maxAngleDeg 15 is a starting swing, not a tuned final value — move it
+     * to change how far the shoulder leans once it passes pivotZ.
      */
-    shoulderBend: {
+    shoulderHinge: {
       belowCarat: 0.50,
-      fromZ: 9.0,
-      tipZ: 12.69,
-      inwardMM: 0.80,
-      downMM: 0.70,
+      pivotXAbs: 15.8, // 1.8 // change to pull the pillers down
+      pivotZ: -2.5,  // -2.0,
+      maxAngleDeg: 2.9,
+      /**
+       * shoulderHinge has no per-part scoping by default, so with pivotZ this
+       * low (-2.5, below the band's own Z range of -0.26..9.20) it was ALSO
+       * rotating the plain band — and because pivotXAbs (15.8) is far larger
+       * than the band's actual X position (~0 at its peak), that huge lever
+       * arm turned a small 2.9deg swing into a ~0.8 mm drop at the band's
+       * peak. That was silently cancelling bandLift's own +0.7 mm lift
+       * (measured: bandLift alone raises the peak to 9.557, but the
+       * unexcluded hinge then pulls it back down to 8.742) — the actual
+       * cause of the visible gap under the head, not something bandLift's
+       * own value could ever fix by itself.
+       */
+      excludeParts: ['object_5', 'object_40'],
     },
+
+    /**
+     * PILLAR EXTEND — same mechanism, now used to COMPACT rather than
+     * lengthen. `extendMM` is a plain Z offset applied above `fromZ` (see
+     * extendPillarZ in core/deform.js): positive stretches the tip further
+     * away, negative pulls it back down toward `fromZ`, shortening the
+     * shoulder's reach — which is what was actually wanted here: as the head
+     * gets smaller, the pillar reaching up to meet it should get more
+     * compact too, not longer. Then the SAME second hinge bends that
+     * shortened reach inward. UNCONDITIONAL — a shape of the master mesh,
+     * present at every carat, not a carat correction like shoulderHinge
+     * above.
+     *
+     * fromZ 10.5 / toZ 12.69: 12.69 is object_1's own measured tip, so the
+     * cap above it pulls down as one undistorted piece; 10.5 sits just above
+     * the accent stone at Z 10.01-11.23, so the compaction does not touch it.
+     * Swept at extendMM -0.8/-1.2/-1.6/-2.0, tip reach lands at 11.27 / 11.01
+     * / 10.97 / 10.95 — the effect saturates fast because pulling the tip
+     * down toward fromZ also pulls the whole ramp down with it, so there
+     * is not much room left to compact further past about -1.2.
+     *
+     * bendPivotZ matches fromZ, so the bend starts exactly where the
+     * compaction begins. bendPivotXAbs 4.10 is the measured cross-section
+     * mid-point of object_1 at that height.
+     *
+     * extendMM -1.2 and bendAngleDeg 20 are STARTING values, not tuned —
+     * this is the pair to move first. More negative extendMM = shorter
+     * pillar; raise bendAngleDeg to lean the shortened tip further inward.
+     */
+    pillarExtend: {
+      fromZ: 10.5,
+      toZ: 12.69,
+      extendMM: 1.0,
+      bendPivotXAbs: 4.10,
+      bendPivotZ: 10.5,
+      bendAngleDeg: 20,
+    },
+
+    /**
+     * BAND LIFT — push the plain round band's TOP up or down, where the
+     * head's stem actually rests. A DIFFERENT part from the pillars above:
+     * object_5/object_40 are the two halves of the plain band (meeting at
+     * X=0, reaching up to Z 9.20 right under the head) — not object_1/
+     * object_2, which are the shoulder pillars carrying the pavé.
+     *
+     * Reuses extendPillarZ (see core/deform.js) exactly as pillarExtend
+     * does, just aimed at these parts with its own fromZ/toZ/liftMM, so it
+     * is fully independent — tune this without touching pillarExtend at all.
+     *
+     * Same carat gating as the other corrections here: 0 at/above
+     * belowCarat, full strength at the carat floor.
+     *
+     * fromZ 6.0 / toZ 9.20: 9.20 is object_5/40's own measured top, so it
+     * rides up/down as one undistorted cap; 6.0 gives a few mm of ramp so
+     * the push eases in rather than kinking where it starts.
+     *
+     * liftMM 0.0 is OFF — this is the value to change. Positive raises the
+     * band's top toward the head; negative lowers it.
+     */
+    bandLift: {
+      belowCarat: 0.50,
+      parts: ['object_5', 'object_40'],
+      fromZ: 0.0,
+      toZ: -9.50,  // 9.20,
+      liftMM: 0.1, // 0.6 stable
+    },
+
+    /**
+     * BAND FILLER — a NEW, from-scratch object plugging the gap that opened
+     * up under the head once shoulderHinge/pillarExtend/bandLift reshaped
+     * the pillars and band. There is nothing in any shipped GLB to extrude
+     * from here (that gap is a consequence of these profile settings, not
+     * something the original mesh ever had), so this is authored geometry —
+     * a small solid box (see buildFillerBox in core/deform.js), not an edit
+     * to object_1/2/5/40.
+     *
+     * It becomes a real shank part (built once in Ring.jsx's buildFillerPart,
+     * pushed into the same `shankParts` array everything else lives in), so
+     * it automatically takes the SAME ring-size deformMetal pass as the rest
+     * of the shank — grows/shrinks with the ring size slider exactly like
+     * the band it is welded to, with no extra wiring needed for that part of
+     * the ask.
+     *
+     * baseZ 9.15 sits just under the band's own measured peak (object_5/40
+     * converge to a point at X=0, Y=+-1.05, Z=9.20) — the 0.05 mm overlap is
+     * deliberate, so the filler's bottom is buried inside the band rather
+     * than just touching it, guaranteeing no seam even if bandLift moves the
+     * band slightly. baseWidthY 2.1 matches shankWidthMM exactly for the
+     * same reason.
+     *
+     * topZ / topWidthX / topWidthY are the ones to move to close YOUR
+     * specific gap — start here and adjust height and taper to match what
+     * the current shoulderHinge/pillarExtend settings have opened up.
+     */
+    /**
+     * ARCH FILLER — a NEW, from-scratch bridge that MEASURES its own shape
+     * from the live geometry on every render, instead of a hand-set box.
+     *
+     * The gap this plugs turned out to be wider and more irregular than a
+     * single box (measured across the pear at 0.25 ct, with the current
+     * shoulderHinge/pillarExtend/bandLift settings applied): a roof-shaped
+     * void spanning X roughly -3.5 to +3.5, only ~0.3 mm tall at its edges
+     * but ~2.0 mm tall at the centre, closing to nothing right where the
+     * shoulders already touch (measured X +-4). No fixed box matches that,
+     * and hand-tuning six numbers to chase a shape this irregular was the
+     * actual ask ("can't you find what area needs to be filled").
+     *
+     * So this measures it directly (see updateArchFiller in src/Ring.jsx,
+     * sampleArchFillerPositions in core/deform.js): for each of `slices` X
+     * positions between xMin/xMax, it finds the highest point any
+     * `belowParts` vertex reaches there (the band, object_5/object_40) and
+     * the lowest point any `aboveParts` vertex reaches there (the shoulder,
+     * object_1/object_2), and builds a solid bridge spanning exactly that,
+     * every time carat or ring size changes. Where the two already touch,
+     * the slice collapses to zero height on its own — no separate tapering
+     * logic needed.
+     *
+     * Because it re-measures every render, it keeps fitting even if
+     * shoulderHinge / pillarExtend / bandLift above get retuned again later.
+     *
+     * xMin/xMax -4/4 and xToleranceMM 0.3 were set from where the measured
+     * gap actually starts and ends (+-4 is where it collapses to ~0);
+     * halfWidthY 1.05 matches the band's own half-width (shankWidthMM/2)
+     * so the bridge is exactly as wide as what it is welded to.
+     */
+    
 
     tableZ: 14.081,
     minZ: 9.081,
