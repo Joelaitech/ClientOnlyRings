@@ -93,6 +93,57 @@ export default {
   },
 
   head: {
+    /**
+     * BORE GUARD — protects the finger hole itself from every carat
+     * correction below (shoulderHinge, bandLift, bandLiftBottom). Those all
+     * reshape a NAMED PART wholesale, but object_1/2/5/40/4/41 are each
+     * modelled as one continuous shell running from the bore surface
+     * (measured touching the finger, radius 8.190-8.201mm, essentially
+     * exactly master.boreRadius 8.1899) all the way out to their decorated
+     * outer face — so pushing or rotating "the whole part" also drags the
+     * bore surface along with it. That is what was turning the finger hole
+     * oval at 0.25 ct: shoulderHinge in particular rotates ALL of object_1/2
+     * above pivotZ, which includes a small patch of true bore-surface
+     * vertices right where they weld to the band (Z -0.235..0.833).
+     *
+     * With this set, extendPillarZ/shiftPillarBelow/rotateShoulderTip all
+     * blend each vertex's effect to ZERO as its PRISTINE distance from the
+     * bore axis approaches boreRadius, ramping up to full effect only once
+     * `rampMM` clear of it — so the bore stays a perfect circle at every
+     * ring size, while the decorated shell around it still gets pushed/
+     * thickened/rotated as configured. rampMM 0.3 was chosen from the
+     * measured vertex spread: the true bore layer sits within ~0.02mm of
+     * boreRadius, while the bulk of each part's vertices are 0.3mm+ further
+     * out — so 0.3 fully protects the finger hole without visibly softening
+     * the corrections elsewhere.
+     */
+    boreGuard: {
+      rampMM: 0.3,
+    },
+
+    /**
+     * BLEND FROM Z — the height above which the shank stops sizing itself
+     * and starts riding the head's single rigid offset (see
+     * blendShankToHead in core/deform.js, called from Ring.jsx). Needed so
+     * the shoulder rail keeps travelling WITH the head's basket as the ring
+     * grows, instead of fanning sideways off it — but everything AT OR
+     * BELOW this height is untouched, so it must sit above every part of
+     * the true bore surface (measured: object_5/40 reach up to Z 8.20,
+     * object_1/2 up to Z 0.83) or that correction starts reshaping the
+     * finger hole itself instead of just the rail.
+     *
+     * By default this falls back to shoulderHinge.pivotZ, which is WRONG
+     * here — shoulderHinge.pivotZ (-2.5) was tuned for a completely
+     * different, carat-gated purpose (how far down the pillar the low-carat
+     * bend starts) and sits well below the bore. Reusing it silently made
+     * blendShankToHead — which runs at EVERY carat, driven only by ring
+     * size — rotate/translate the bore surface too, and it got worse the
+     * larger the ring size: that was the "finger hole goes oval at max
+     * size, independent of carat" bug. Set explicitly to seatZ (9.00),
+     * clear of every bore-facing vertex on this ring, to fix it.
+     */
+    blendFromZ: 9.00,
+
     /** Culet of the centre stone. Kept for reference; see seatZ. */
     pivotZ: 10.821,
     /**
@@ -179,7 +230,15 @@ export default {
        * cause of the visible gap under the head, not something bandLift's
        * own value could ever fix by itself.
        */
-      excludeParts: ['object_5', 'object_40'],
+      /**
+       * object_3/object_4/object_42/object_41 (the bottom band halves, see
+       * bandLiftBottom below) added to the exclude list for the same reason
+       * as object_5/object_40: pivotZ (-2.5) sits inside their own Z range
+       * (-9.70..-0.24), so without this they were partially caught by this
+       * same rotation AFTER bandLiftBottom already pushed them — which is
+       * why liftMM changes below looked like they were "not working".
+       */
+      excludeParts: ['object_5', 'object_40', 'object_3', 'object_4', 'object_42', 'object_41'],
     },
 
     /**
@@ -246,6 +305,50 @@ export default {
       fromZ: 0.0,
       toZ: -9.50,  // 9.20,
       liftMM: 0.1, // 0.6 stable
+    },
+
+    /**
+     * BAND LIFT (BOTTOM) — same push as bandLift above, mirrored to the
+     * OPPOSITE side of the band: the plain shank arc furthest from the
+     * head, where object_3/object_42 (outer wall) and object_4/object_41
+     * (inner wall) meet at the ring's lowest point (X=0, around Z -9.7 —
+     * this is the visible seam at the very bottom of the ring, diametrically
+     * across from the head).
+     *
+     * GATING — hard on/off, not a carat ramp: atCarat 0.25 means this ONLY
+     * runs when the centre stone is exactly 0.25 ct (the catalogue floor);
+     * belowRingSize 6.0 means it also requires the ring size slider to read
+     * under US 6.0. Both must hold, or nothing here moves. Set either to
+     * null to drop that condition.
+     *
+     * fromZ -0.29 / toZ -9.70: -0.29 is the equator, where these parts meet
+     * object_5/object_40 (untouched, so no new seam opens at that join);
+     * -9.70 is their own measured lowest point, so every push below reaches
+     * its full strength exactly at the tip rather than partway down the arc.
+     *
+     * PREVIOUSLY these values looked like they had no effect — the cause
+     * was shoulderHinge above still touching this same Z range afterwards
+     * (see the note added to its excludeParts) and undoing the push. Fixed
+     * there, not here; these knobs were always applying correctly.
+     *
+     * FOUR independent knobs, all ramped the same way (0 at the equator,
+     * full at the tip):
+     *   liftMM     0.0  Z push:  + toward the head, - further from it
+     *   offsetX    0.0  X push:  sideways, toward +X
+     *   offsetY    0.0  Y push:  sideways, across the band's own thickness
+     *   thickenMM  0.0  radial push away from the bore axis: + thicker
+     *                   (wall bulges outward), - thinner (bulges inward)
+     */
+    bandLiftBottom: {
+      atCarat: 0.25,
+      belowRingSize: 6.0,
+      parts: ['object_3', 'object_4', 'object_42', 'object_41'],
+      fromZ: -0.29,
+      toZ: -9.70,
+      liftMM: 0.0,      // <- Z: push up(+)/down(-) toward or away from the head
+      offsetX: 0.0,      // <- X: push sideways
+      offsetY: 0.0,      // <- Y: push across the band's thickness
+      thickenMM: 0.0,    // <- radial: thicker(+)/thinner(-) outward from the bore
     },
 
     /**

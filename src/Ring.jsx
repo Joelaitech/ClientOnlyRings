@@ -15,7 +15,7 @@ import { METALS, DIAMOND, CARAT, SHANK_WIDTH, RING_SIZE } from '../core/standard
 import {
   deformMetal, deformStoneRigid, deformHead, blendShankToHead,
   bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
-  fixMirroredStone, extendPillarZ, extendStoneZ,
+  fixMirroredStone, extendPillarZ, extendStoneZ, shiftPillarBelow,
   buildArchFillerTopology, sampleArchFillerPositions,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
@@ -333,13 +333,21 @@ export default function Ring({ profile, config }) {
   /**
    * Where the shank stops sizing on its own radius and starts riding the head's
    * offset. The ramp must clear everything BELOW the joint — the bore, the
-   * band, the pave and (on the oval) the gallery — so it starts at the shoulder
-   * hinge's pivot where a profile defines one, since that pivot was already
-   * measured to sit above the gallery and below the shoulder accents. Rings
-   * with no hinge start at the seat, which is where their head meets the shank
-   * by definition.
+   * band, the pave and (on the oval) the gallery.
+   *
+   * `profile.head.blendFromZ` is the explicit way to set this. Failing that,
+   * it falls back to the shoulder hinge's pivot — ONLY valid on a ring where
+   * that pivot is already known to sit above the gallery/bore. On pear that
+   * stopped being true once shoulderHinge.pivotZ was retuned down to -2.5 for
+   * an unrelated reason (moving the carat-driven pillar bend point) — this
+   * function then started running all the way down through the true bore
+   * surface, dragging it toward the head's single rigid offset instead of
+   * each vertex's own individual radial one, which is what turned the finger
+   * hole oval, worse the larger the ring size, at every carat (see
+   * blendFromZ in rings/pear/profile.js).
    */
-  const blendFromZ = profile.head.shoulderHinge?.pivotZ
+  const blendFromZ = profile.head.blendFromZ
+    ?? profile.head.shoulderHinge?.pivotZ
     ?? profile.head.seatZ ?? profile.head.pivotZ;
   const blendFullZ = (profile.head.seatZ ?? profile.head.pivotZ) + 2.0;
 
@@ -413,6 +421,42 @@ export default function Ring({ profile, config }) {
     ? Math.max(0, Math.min(1,
         (bandLift.belowCarat - carat) / (bandLift.belowCarat - caratFloor)))
     : 0;
+
+  /**
+   * BAND LIFT (BOTTOM) — same mechanism as bandLift above, aimed at the
+   * OPPOSITE side of the band: the plain shank arc furthest from the head,
+   * where its two halves meet at the ring's lowest point. Independent parts
+   * list, independent fromZ/toZ/liftMM — tune without touching bandLift.
+   *
+   * Gating is a HARD on/off, not a ramp: `atCarat` (only active at that
+   * exact carat — this is a specific-size fix, not a fade-in correction) AND
+   * `belowRingSize` (only active below that ring size) must both hold, if
+   * set. Omit either to drop that condition.
+   */
+  const bandLiftBottom = profile.head.bandLiftBottom ?? null;
+  const bandLiftBottomActive = !!bandLiftBottom
+    && (bandLiftBottom.atCarat == null || Math.abs(carat - bandLiftBottom.atCarat) < 1e-6)
+    && (bandLiftBottom.belowRingSize == null || ringSize < bandLiftBottom.belowRingSize);
+  const bandLiftBottomAmount = bandLiftBottomActive ? 1 : 0;
+
+  /**
+   * BORE GUARD — protects the finger-hole surface from bandLift/
+   * bandLiftBottom/shoulderHinge above. Those all reshape a NAMED PART
+   * wholesale, but a part like the plain band is modelled as one continuous
+   * shell running from the bore surface (touching the finger) out to its
+   * decorated face — pushing/rotating the whole thing drags the bore along
+   * with it and turns a circular finger hole oval. Opt-in per ring via
+   * `profile.head.boreGuard` (only pear sets this so far) — every other
+   * ring's deform calls omit it and are completely unaffected.
+   */
+  const boreGuardCfg = profile.head.boreGuard
+    ? {
+        x: profile.master.boreCenter?.x ?? 0,
+        z: boreZ,
+        radius: profile.master.boreRadius,
+        rampMM: profile.head.boreGuard.rampMM ?? 0.3,
+      }
+    : null;
 
   // --- RING SIZE + WIDTH: deform the shank --------------------------------
   // Runs only when a shank parameter changes, not every frame. Both
@@ -710,7 +754,8 @@ export default function Ring({ profile, config }) {
         // Frozen parts take the rigid path too — the blend is another
         // per-vertex radial transform, so letting it run normally would
         // reshape exactly what the freeze is protecting.
-        (p.isStone || keepRigid) ? p.centroid : null
+        (p.isStone || keepRigid) ? p.centroid : null,
+        boreGuardCfg
       );
 
       /**
@@ -784,8 +829,23 @@ export default function Ring({ profile, config }) {
         if (p.isStone) {
           extendStoneZ(target, p.centroid, bandLift.fromZ, bandLift.toZ, liftMM);
         } else {
-          extendPillarZ(p.base, target, bandLift.fromZ, bandLift.toZ, liftMM);
+          extendPillarZ(p.base, target, bandLift.fromZ, bandLift.toZ, liftMM, boreGuardCfg);
         }
+      }
+
+      if (bandLiftBottom && bandLiftBottomAmount > 0 && !p.isStone
+          && bandLiftBottom.parts?.includes(p.name)) {
+        // Same idea as bandLift, mirrored to the band's bottom arc (opposite
+        // the head): its "untouched" boundary (the equator) sits ABOVE the
+        // affected tip in Z, the reverse of bandLift, so this ramps toward
+        // toZ going DOWN instead of up. One pass covers the Z push plus the
+        // new X/Y position and radial-thickness knobs, all on the same ramp.
+        shiftPillarBelow(
+          p.base, target, bandLiftBottom.fromZ, bandLiftBottom.toZ,
+          bandLiftBottom.offsetX ?? 0, bandLiftBottom.offsetY ?? 0,
+          bandLiftBottom.liftMM ?? 0, bandLiftBottom.thickenMM ?? 0,
+          profile.master.boreCenter?.x ?? 0, boreZ, boreGuardCfg
+        );
       }
 
       if (hinge && !hinge.excludeParts?.includes(p.name)) {
@@ -801,7 +861,7 @@ export default function Ring({ profile, config }) {
         }
         rotateShoulderTip(
           target, hingeAmount, hinge.pivotXAbs, hinge.pivotZ + delta,
-          hinge.maxAngleDeg, rigidAt
+          hinge.maxAngleDeg, rigidAt, p.base, boreGuardCfg
         );
 
         /**
@@ -877,7 +937,7 @@ export default function Ring({ profile, config }) {
   }, [shankParts, delta, ringSize, shankWidth, carat, profile, boreZ,
       headOffset, blendFromZ, blendFullZ, slideDirs, accentSlideSet,
       bend, bendAmount, hinge, hingeAmount, extend, extendAmount,
-      bandLift, bandLiftAmount]);
+      bandLift, bandLiftAmount, bandLiftBottom, bandLiftBottomAmount, boreGuardCfg]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**

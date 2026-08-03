@@ -133,9 +133,21 @@ export function deformStoneRigid(base, target, centroid, delta, boreCenterZ = 0)
  * @param {number} fromZ         height where the blend starts easing in
  * @param {number} fullZ         height at which it reaches the head's offset
  * @param {{x:number,z:number}|null} [rigidAt]  stone centroid, or null for metal
+ * @param {{x:number,z:number,radius:number,rampMM?:number}} [boreGuard]
+ *   Optional, metal path only. This function is meant to leave the bore
+ *   untouched below `fromZ` (see above) — but `fromZ` is a single height
+ *   shared by every part in the shank, and on some rings it has to sit low
+ *   enough to cover a shoulder rail that DOES need this correction, which
+ *   then also pulls in the band's own bore-facing vertices at that same
+ *   height even though the bore has nothing to do with the head. When set,
+ *   blends each vertex's correction to ZERO as its PRISTINE distance from
+ *   (boreGuard.x, boreGuard.z) approaches boreGuard.radius, ramping to full
+ *   effect over `rampMM` (default 0.3) — so the true bore surface keeps its
+ *   own radial offset exactly, at every ring size, regardless of `fromZ`.
  */
 export function blendShankToHead(
-  base, target, delta, boreCenterZ, headOffX, headOffZ, fromZ, fullZ, rigidAt = null
+  base, target, delta, boreCenterZ, headOffX, headOffZ, fromZ, fullZ, rigidAt = null,
+  boreGuard = null,
 ) {
   const span = fullZ - fromZ;
   const smoothstep = (t) => t * t * (3 - 2 * t);
@@ -170,7 +182,13 @@ export function blendShankToHead(
   for (let i = 0; i < base.length; i += 3) {
     const z = base[i + 2];
     if (z <= fromZ) continue;
-    const w = span <= 0 ? 1 : smoothstep(Math.min(1, (z - fromZ) / span));
+    let w = span <= 0 ? 1 : smoothstep(Math.min(1, (z - fromZ) / span));
+    if (boreGuard) {
+      const r = Math.hypot(base[i] - boreGuard.x, z - boreGuard.z);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      w *= smoothstep(rt);
+      if (w <= 0) continue;
+    }
     const [ox, oz] = ownOffset(base[i], z);
     target[i] += (headOffX - ox) * w;
     // Y is the band-width axis and must stay independent of ring size.
@@ -399,8 +417,18 @@ export function bendShoulders(
  * @param {number} fromZ         height below which nothing moves
  * @param {number} toZ           height at which the full extension is reached
  * @param {number} extendMM      how far the tip moves up, in mm
+ * @param {{x:number,z:number,radius:number,rampMM?:number}} [boreGuard]
+ *   Optional. Parts like a plain band mesh in one piece from the bore
+ *   surface (where it touches the finger) all the way out to its decorated
+ *   face, so a Z push here would drag the bore surface along with it and
+ *   turn a circular finger hole oval. When set, vertices at/near
+ *   `boreGuard.radius` from (boreGuard.x, boreGuard.z) — measured on the
+ *   PRISTINE base, so the classification holds at every ring size — get
+ *   zero effect, ramping smoothly (over `rampMM`, default 0.3) up to full
+ *   effect only once clear of the bore. Omit for the old, unguarded
+ *   behaviour (every other existing caller).
  */
-export function extendPillarZ(base, target, fromZ, toZ, extendMM) {
+export function extendPillarZ(base, target, fromZ, toZ, extendMM, boreGuard = null) {
   if (!extendMM) return;
   const span = toZ - fromZ;
   const smoothstep = (t) => t * t * (3 - 2 * t);
@@ -409,7 +437,14 @@ export function extendPillarZ(base, target, fromZ, toZ, extendMM) {
     const z = base[i + 2];
     if (z <= fromZ) continue;
     const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
-    target[i + 2] += extendMM * smoothstep(t);
+    let w = smoothstep(t);
+    if (boreGuard) {
+      const r = Math.hypot(base[i] - boreGuard.x, base[i + 2] - boreGuard.z);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      w *= smoothstep(rt);
+      if (w <= 0) continue;
+    }
+    target[i + 2] += extendMM * w;
   }
 }
 
@@ -434,6 +469,61 @@ export function extendStoneZ(target, centroid, fromZ, toZ, extendMM) {
   const dz = extendMM * smoothstep(t);
 
   for (let i = 0; i < target.length; i += 3) target[i + 2] += dz;
+}
+
+/**
+ * General-purpose version of extendPillarZ(), mirrored for parts BELOW a
+ * threshold instead of above one — e.g. the bottom of a band's arc, where
+ * "further from the threshold" means more negative Z, not more positive.
+ * Able to push a vertex in any of X/Y/Z, AND/OR thicken the wall radially
+ * (away from/toward the bore axis in the XZ plane) in the same pass — one
+ * weight, four independent knobs, so combining them never introduces a seam
+ * of its own.
+ *
+ * @param {Float32Array} base    pristine positions
+ * @param {Float32Array} target  buffer to modify IN PLACE
+ * @param {number} fromZ         height above which nothing moves
+ * @param {number} toZ           height (BELOW fromZ) at which full effect is reached
+ * @param {number} dx            plain X shift at full effect, mm
+ * @param {number} dy            plain Y shift at full effect, mm
+ * @param {number} dz            plain Z shift at full effect, mm
+ * @param {number} thickenMM     radial push at full effect: + outward (away
+ *                               from the bore axis, thicker wall), - inward
+ * @param {number} boreX         bore axis X (for the radial direction)
+ * @param {number} boreZ         bore axis Z (for the radial direction)
+ * @param {{radius:number,rampMM?:number}} [boreGuard]
+ *   Optional. Same idea as extendPillarZ's boreGuard: zeroes the effect on
+ *   vertices at/near `boreGuard.radius` from (boreX, boreZ) — the true bore
+ *   surface, measured on the pristine base — ramping to full effect over
+ *   `rampMM` (default 0.3) once clear of it, so this can never turn a
+ *   circular finger hole oval. Omit for the old, unguarded behaviour.
+ */
+export function shiftPillarBelow(base, target, fromZ, toZ, dx, dy, dz, thickenMM, boreX, boreZ, boreGuard = null) {
+  if (!dx && !dy && !dz && !thickenMM) return;
+  const span = fromZ - toZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z >= fromZ) continue;
+    const t = span <= 0 ? 1 : Math.min(1, (fromZ - z) / span);
+    let w = smoothstep(t);
+    if (boreGuard) {
+      const r = Math.hypot(base[i] - boreX, base[i + 2] - boreZ);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      w *= smoothstep(rt);
+      if (w <= 0) continue;
+    }
+    if (dx) target[i] += dx * w;
+    if (dy) target[i + 1] += dy * w;
+    if (dz) target[i + 2] += dz * w;
+    if (thickenMM) {
+      const vx = base[i] - boreX, vz = base[i + 2] - boreZ;
+      const r = Math.hypot(vx, vz) || 1;
+      target[i] += (vx / r) * thickenMM * w;
+      target[i + 2] += (vz / r) * thickenMM * w;
+    }
+  }
 }
 
 /**
@@ -462,8 +552,21 @@ export function extendStoneZ(target, centroid, fromZ, toZ, extendMM) {
  * @param {number} pivotZ          Z of the hinge point — at or below this, untouched
  * @param {number} maxAngleDeg     rotation at amount = 1, in degrees
  * @param {{x:number,y:number,z:number}|null} rigidAt  stone centroid, or null for metal
+ * @param {Float32Array} [guardBase]  pristine positions, required if boreGuard is set
+ * @param {{x:number,z:number,radius:number,rampMM?:number}} [boreGuard]
+ *   Optional, metal path only. Same idea as extendPillarZ's boreGuard: a
+ *   part can include a stretch of the true bore surface among the vertices
+ *   this rotation would otherwise sweep — e.g. shoulder shells that reach
+ *   all the way down to where they're welded to the band. Blends each
+ *   vertex smoothly between its un-rotated and rotated position based on
+ *   its PRISTINE distance from (boreGuard.x, boreGuard.z): 0% at/inside
+ *   `boreGuard.radius`, ramping to 100% over `rampMM` (default 0.3) — so
+ *   the finger-hole surface itself never leaves its circular shape.
  */
-export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg, rigidAt = null) {
+export function rotateShoulderTip(
+  target, amount, pivotXAbs, pivotZ, maxAngleDeg, rigidAt = null,
+  guardBase = null, boreGuard = null,
+) {
   if (amount <= 0) return;
   const angle = (maxAngleDeg * Math.PI / 180) * amount;
 
@@ -523,12 +626,22 @@ export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg
     return;
   }
 
+  const smoothstep = (t) => t * t * (3 - 2 * t);
   for (let i = 0; i < target.length; i += 3) {
     const z = target[i + 2];
     if (z <= pivotZ) continue;
     const [nx, nz] = rotate(target[i], z);
-    target[i] = nx;
-    target[i + 2] = nz;
+    if (guardBase && boreGuard) {
+      const r = Math.hypot(guardBase[i] - boreGuard.x, guardBase[i + 2] - boreGuard.z);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      const w = smoothstep(rt);
+      if (w <= 0) continue;
+      target[i] += (nx - target[i]) * w;
+      target[i + 2] += (nz - target[i + 2]) * w;
+    } else {
+      target[i] = nx;
+      target[i + 2] = nz;
+    }
   }
 }
 
