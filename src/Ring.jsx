@@ -260,15 +260,38 @@ export default function Ring({ profile, config }) {
   /**
    * Where the shank stops sizing on its own radius and starts riding the head's
    * offset. The ramp must clear everything BELOW the joint — the bore, the
-   * band, the pave and (on the oval) the gallery — so it starts at the shoulder
-   * hinge's pivot where a profile defines one, since that pivot was already
-   * measured to sit above the gallery and below the shoulder accents. Rings
-   * with no hinge start at the seat, which is where their head meets the shank
-   * by definition.
+   * band, the pave and (on the oval) the gallery.
+   *
+   * `profile.head.blendFromZ` is the explicit way to set this — falling back
+   * to the shoulder hinge's pivot where a profile defines one (valid only if
+   * that pivot is already known to sit above the gallery/bore), then to the
+   * seat, where a ring with no hinge's head meets the shank by definition.
+   *
+   * A narrow zone (the default: seat to seat+2) works fine for a ring whose
+   * shoulder is basically rigid down there — but on a pillar carrying a full
+   * pavé row all the way down (the pear), each vertex's own ring-size fan
+   * grows with delta over the WHOLE pillar height, then has to be cancelled
+   * back to near-pristine within just that 2 mm band — which reads as the
+   * pillar kinking/bending right at the transition instead of leaning
+   * smoothly, worse the further the ring size sits from the master.
+   * `blendFromZ` set low enough to span the whole pavé row spreads that same
+   * cancellation over ~10 mm instead, which is smooth rather than a kink —
+   * see `pillarStretchFromZ`'s note in the pear profile for the same
+   * principle applied to `stretchPillarToHead`.
    */
-  const blendFromZ = profile.head.shoulderHinge?.pivotZ
+  const blendFromZ = profile.head.blendFromZ
+    ?? profile.head.shoulderHinge?.pivotZ
     ?? profile.head.seatZ ?? profile.head.pivotZ;
   const blendFullZ = (profile.head.seatZ ?? profile.head.pivotZ) + 2.0;
+  /**
+   * Parts blendShankToHead must NOT touch. It selects purely by height, same
+   * caveat as pillarStretchSkipParts: a low `blendFromZ` needed for the
+   * pillar would ALSO reach into the plain band/bore if not excluded, and
+   * that part must keep its own individual ring-size fan (that IS what makes
+   * the bore stay circular) rather than being redirected toward the head's
+   * single fixed offset.
+   */
+  const blendSkipParts = profile.head.blendSkipParts ?? [];
 
   /**
    * Shoulder bend strength: 1 at the bottom of the carat range, easing to 0 at
@@ -618,17 +641,21 @@ export default function Ring({ profile, config }) {
        * Blending the rail onto `headOffset` above `blendFromZ` makes rail and
        * basket travel as one piece at every size; the gap goes flat at
        * 0.059 mm and stops depending on ring size at all. Below the ramp
-       * nothing changes, so the bore and band are untouched. See
-       * blendShankToHead in core/deform.js.
+       * nothing changes, so the bore and band are untouched (as long as
+       * `blendSkipParts` names anything that would otherwise fall inside a
+       * lowered `blendFromZ` — see its note above). See blendShankToHead in
+       * core/deform.js.
        */
-      blendShankToHead(
-        p.base, target, delta, boreZ, headOffset.x, headOffset.z,
-        blendFromZ, blendFullZ,
-        // Frozen parts take the rigid path too — the blend is another
-        // per-vertex radial transform, so letting it run normally would
-        // reshape exactly what the freeze is protecting.
-        (p.isStone || keepRigid) ? p.centroid : null
-      );
+      if (!blendSkipParts.includes(p.name)) {
+        blendShankToHead(
+          p.base, target, delta, boreZ, headOffset.x, headOffset.z,
+          blendFromZ, blendFullZ,
+          // Frozen parts take the rigid path too — the blend is another
+          // per-vertex radial transform, so letting it run normally would
+          // reshape exactly what the freeze is protecting.
+          (p.isStone || keepRigid) ? p.centroid : null
+        );
+      }
 
       /**
        * At small carats the head shrinks away from the shoulder tips, so the

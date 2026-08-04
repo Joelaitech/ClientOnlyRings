@@ -159,6 +159,35 @@ export default {
      */
 
     /**
+     * BLEND FROM Z — widens the ring-size "hand the rail the head's single
+     * offset" zone (see blendShankToHead in core/deform.js, and the note by
+     * blendFromZ in src/Ring.jsx) from its 2 mm default (seatZ to seatZ+2)
+     * down to 1.50, spreading the same correction across the whole pavé row
+     * instead of concentrating it in a 2 mm band.
+     *
+     * Without this, measured on object_1 at US 13 (delta +2.502): the
+     * pillar's own ring-size fan pushes it out to X 8.32 at Z 9.0, then the
+     * default 2 mm blend zone cancels almost all of that back to X 4.96 by
+     * Z 11.0 — a 3.36 mm change in 2 mm of height, which reads as the
+     * pillar kinking/bending sharply right there rather than leaning
+     * smoothly. Widened to 1.50, the SAME total change spreads across
+     * ~9.5 mm (X 12.52 at Z 1.5, easing down to the same X 4.92 at Z 11.0),
+     * matching the head at the same final position without ever creating a
+     * visible corner in between.
+     *
+     * blendSkipParts excludes object_5/object_40 (the plain round band,
+     * topping out at Z 9.20 — just above the new blendFromZ) for the same
+     * reason pillarStretchSkipParts excludes them below: the band's OWN
+     * individual ring-size fan is what keeps the bore circular, and forcing
+     * it toward the head's single fixed offset instead would reopen that
+     * exact ovality bug for the sake of a part that barely diverges from
+     * the head's offset anyway (its topmost vertex sits at X=0, where the
+     * own-fan and the head-offset paths are already the same).
+     */
+    blendFromZ: 1.50,
+    blendSkipParts: ['object_5', 'object_40'],
+
+    /**
      * PILLAR STRETCH — same mechanism built for LR64530/clientobj2 (see
      * stretchPillarToHead in core/deform.js, and the long comment there):
      * keeps the shoulder pillars welded to the head as carat grows, instead
