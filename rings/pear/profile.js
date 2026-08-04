@@ -188,6 +188,21 @@ export default {
     blendSkipParts: ['object_5', 'object_40'],
 
     /**
+     * BLEND ONLY SHRINKING — new plan: when the ring size is INCREASED
+     * above the master, keep the pillar's own individual radial fan instead
+     * of straightening it toward the head via blendShankToHead at all. A
+     * vertex's own radial direction points further outboard the higher up
+     * the pillar sits, so left alone it curves and leans outward as the
+     * ring grows — the wanted look now, replacing the straight/aligned
+     * result blendFromZ above was tuned to produce.
+     *
+     * Only affects the GROWING direction (ring size above the 6.0 master):
+     * blendFromZ/blendSkipParts above still apply as before when the ring
+     * size is at or below the master, so shrinking is unchanged.
+     */
+    blendOnlyShrinking: true,
+
+    /**
      * PILLAR STRETCH — same mechanism built for LR64530/clientobj2 (see
      * stretchPillarToHead in core/deform.js, and the long comment there):
      * keeps the shoulder pillars welded to the head as carat grows, instead

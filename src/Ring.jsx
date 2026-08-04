@@ -292,6 +292,18 @@ export default function Ring({ profile, config }) {
    * single fixed offset.
    */
   const blendSkipParts = profile.head.blendSkipParts ?? [];
+  /**
+   * `profile.head.blendOnlyShrinking` — opt-in: skip blendShankToHead
+   * entirely once the ring size is ABOVE the master (delta > 0), so the
+   * pillar keeps its own individual radial fan instead of being pulled
+   * straight toward the head's single fixed offset. A vertex's own radial
+   * direction points further outboard the higher up the pillar it sits, so
+   * left alone it reads as a curve leaning outward as the ring grows —
+   * which is what this is for, on a ring where that curved lean is the
+   * wanted look rather than a defect. Below the master (delta <= 0) the
+   * blend still runs as usual — this only changes the GROWING direction.
+   */
+  const blendOnlyShrinking = profile.head.blendOnlyShrinking === true;
 
   /**
    * Shoulder bend strength: 1 at the bottom of the carat range, easing to 0 at
@@ -646,7 +658,7 @@ export default function Ring({ profile, config }) {
        * lowered `blendFromZ` — see its note above). See blendShankToHead in
        * core/deform.js.
        */
-      if (!blendSkipParts.includes(p.name)) {
+      if (!blendSkipParts.includes(p.name) && !(blendOnlyShrinking && delta > 0)) {
         blendShankToHead(
           p.base, target, delta, boreZ, headOffset.x, headOffset.z,
           blendFromZ, blendFullZ,
