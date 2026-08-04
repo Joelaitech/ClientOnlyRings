@@ -134,43 +134,76 @@ export default {
     scaleFullAtZ: 9.00,
 
     /**
-     * SHOULDER BEND — close the last joint from the SHANK side.
+     * SHOULDER BEND — REMOVED for this ring.
      *
-     * At the bottom of the carat range the basket rail (head object_3) shrinks
-     * away from the shoulder tips. Measured rail-to-shoulder gap:
-     *   1.00 ct  0.017 mm      0.25 ct  0.565 mm
-     * Every other head part stays connected at 0.25 ct (0.09-0.16 mm), so this
-     * one contact is the whole problem.
+     * This used to close a joint gap that only opens up below 0.50 ct (the
+     * basket rail shrinking away from the shoulder tips — measured 0.565 mm
+     * at 0.25 ct, vs 0.017 mm at 1.00 ct). It read its ramp strength from
+     * `(belowCarat - carat) / (belowCarat - caratFloor)`, where caratFloor
+     * comes from `master.caratMin` — which was 0.25 (the old catalogue
+     * floor) when this was tuned.
      *
-     * Fixing it from the head side is what kept breaking the 0.50-3.00 range,
-     * which is otherwise correct. Bending the SHANK instead cannot regress
-     * anything: the head is untouched, and the correction fades to zero above
-     * `belowCarat`.
+     * master.caratMin is now 1.00 (this ring's slider was restricted to
+     * 1.00-3.00 ct), so caratFloor became 1.00 too — and with belowCarat
+     * (0.50) now BELOW caratFloor (1.00), that same ramp formula's
+     * denominator flips sign, and the correction no longer fades to 0
+     * above belowCarat: it clamps to FULL strength (1.0) at every carat
+     * from 1.00 to 3.00 instead, permanently bending the shoulder tip
+     * inward/down 0.80/0.70 mm — the visibly thinned, bent pillar top
+     * reported at both ends of the new range.
      *
-     * Travel was swept against the real mesh at full strength. The straight
-     * point-to-point delta (0.434 in, 0.360 down) undershot, because the tip
-     * has to travel along the rail's curve rather than straight at it:
-     *   in 0.40 down 0.30 -> 0.250 mm      in 0.60 down 0.70 -> 0.039
-     *   in 0.80 down 0.50 -> 0.033         in 0.80 down 0.70 -> 0.023  <- used
-     *
-     * `fromZ` is 9.0. It must sit below the contact at Z 11.67 or the moving
-     * band misses it entirely (at 11.0 the gap did not budge from 0.231 mm).
-     * Going lower than strictly necessary also buys a much smoother curve —
-     * measured shoulder curvature, lower is smoother:
-     *   fromZ 10.2 -> 0.383     fromZ 9.0 -> 0.130     fromZ 6.0 -> 0.320
-     * 9.0 gives the smoothest bend while still closing the joint, and it is
-     * where the shoulders naturally start to rise.
-     *
-     * The bore is unaffected at every setting tried — the weight is zero below
-     * fromZ, so the band, bore and lower pavé never move.
+     * Since the gap this fixed only ever existed below 0.50 ct, and this
+     * ring's slider can no longer reach below 1.00 ct, the correction has
+     * no remaining carat value where it is even supposed to apply — so it
+     * is removed outright rather than re-tuned.
      */
-    shoulderBend: {
-      belowCarat: 0.50,
-      fromZ: 9.0,
-      tipZ: 12.69,
-      inwardMM: 0.80,
-      downMM: 0.70,
-    },
+
+    /**
+     * PILLAR STRETCH — same mechanism built for LR64530/clientobj2 (see
+     * stretchPillarToHead in core/deform.js, and the long comment there):
+     * keeps the shoulder pillars welded to the head as carat grows, instead
+     * of holding still while the head's basket/claws grow around them.
+     *
+     * Measured the actual touching pair at the 1.00 ct master: shank
+     * object_1's tip (2.414, -0.605, 12.694) against head object_3 (2.399,
+     * -0.607, 12.700) — 0.017 mm apart, essentially touching. object_3 is
+     * the small basket rail spanning between the claws (Z 11.80-12.70),
+     * exactly the "basket rail" already named in the seatZ/scaleFullAtZ
+     * notes above.
+     *
+     * pillarStretchFromZ 1.50 anchors just below the LOWEST pavé stone on
+     * the pillar (measured bottom 1.868) — nothing at or below it moves.
+     * pillarStretchToZ 12.69 is object_1/2's own measured top (matching the
+     * touching point above almost exactly), where the stretch reaches
+     * deformHead's own formula in full — same as clientobj2, X is a
+     * PROPORTIONAL scale (each vertex's own x) so the pillar's own top
+     * lands on that touching point automatically, without a separate X
+     * parameter, and never reshapes the pavé settings.
+     *
+     * pillarStretchSkipParts — object_5/object_40 ("the plain round band")
+     * reach only up to Z 9.20, essentially AT the seat (9.00) — the same
+     * situation as clientobj2's object_6/7: a smooth rail welding right at
+     * the seat, not the outer pillar reaching all the way to
+     * pillarStretchToZ. Left un-excluded, it would pick up most of the full
+     * stretch (computed for the 12.69 tip) while the head barely moves that
+     * close to the seat by design (deformHead freezes Z at/below the seat),
+     * reading as the band rising up through the head's base — exactly the
+     * bug found and fixed on clientobj2, so excluded here from the start
+     * rather than waiting to reproduce it.
+     *
+     * pillarStretchEasePower 4 — same value, same reason: a plain
+     * linear/smoothstep ramp grows fastest through the pillar's own
+     * mid-height, exactly where its pristine cross-section (measured on
+     * object_1: ~10.1 mm wide near the band, tapering to ~3.2 mm at the
+     * tip) is ALSO narrowing fastest, and the two rates fighting flattens
+     * the taper into a bulge. 4 was re-verified on this ring's own width
+     * profile (per 0.5 mm height bin) to give zero local widening.
+     */
+    pillarStretch: true,
+    pillarStretchFromZ: 1.50,
+    pillarStretchToZ: 12.69,
+    pillarStretchSkipParts: ['object_5', 'object_40'],
+    pillarStretchEasePower: 4,
 
     tableZ: 14.081,
     minZ: 9.081,

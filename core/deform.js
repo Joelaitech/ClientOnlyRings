@@ -796,10 +796,15 @@ export function bendStoneToHead(
  *   own unconditional Z formula in full — e.g. the pillar's own top, where
  *   it welds to the head
  * @param {number} scale    carat linear scale, same value passed to deformHead
+ * @param {number} [easePower] shape of the ramp from `fromZ` to `toZ` — see
+ *   above. Higher values track the pristine taper more closely through the
+ *   middle but concentrate the correction into a shorter stretch right
+ *   before `toZ`; lower values spread it more evenly but risk flattening
+ *   the taper (the bulge this was built to fix). Default 4, the value
+ *   measured (per-ring, see the profile using this) to have zero local
+ *   widening anywhere along the pillar.
  */
-const PILLAR_STRETCH_EASE_POWER = 4;
-
-export function stretchPillarToHead(base, target, seatZ, fromZ, toZ, scale) {
+export function stretchPillarToHead(base, target, seatZ, fromZ, toZ, scale, easePower = 4) {
   const totalStretchZ = (toZ - seatZ) * (scale - 1);
   const span = toZ - fromZ;
 
@@ -807,7 +812,7 @@ export function stretchPillarToHead(base, target, seatZ, fromZ, toZ, scale) {
     const z = base[i + 2];
     if (z <= fromZ) continue;
     const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
-    const w = Math.pow(t, PILLAR_STRETCH_EASE_POWER);
+    const w = Math.pow(t, easePower);
     target[i + 2] += totalStretchZ * w;
     target[i] += base[i] * (scale - 1) * w;
   }
@@ -827,14 +832,15 @@ export function stretchPillarToHead(base, target, seatZ, fromZ, toZ, scale) {
  * @param {number} fromZ
  * @param {number} toZ
  * @param {number} scale
+ * @param {number} [easePower]  see stretchPillarToHead; default 4
  */
-export function stretchStoneToHead(target, centroid, seatZ, fromZ, toZ, scale) {
+export function stretchStoneToHead(target, centroid, seatZ, fromZ, toZ, scale, easePower = 4) {
   const z = centroid.z;
   if (z <= fromZ) return;
   const totalStretchZ = (toZ - seatZ) * (scale - 1);
   const span = toZ - fromZ;
   const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
-  const w = Math.pow(t, PILLAR_STRETCH_EASE_POWER);
+  const w = Math.pow(t, easePower);
   const dz = totalStretchZ * w;
   const dx = centroid.x * (scale - 1) * w;
 

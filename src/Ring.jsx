@@ -386,6 +386,7 @@ export default function Ring({ profile, config }) {
     const pillarStretch = profile.head.pillarStretch === true;
     const stretchFromZ = profile.head.pillarStretchFromZ;
     const stretchToZ = profile.head.pillarStretchToZ;
+    const stretchEasePower = profile.head.pillarStretchEasePower ?? 4;
     /**
      * Parts the stretch must NOT touch. It selects purely by height (a smooth
      * ramp from stretchFromZ to stretchToZ), which also catches structures
@@ -528,7 +529,7 @@ export default function Ring({ profile, config }) {
         }
 
         if (pillarStretch && !stretchSkip.includes(p.name)) {
-          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale);
+          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale, stretchEasePower);
         }
       } else if (p.isStone) {
         // Stones ignore widthScale — they keep their size and stay centred
@@ -562,7 +563,7 @@ export default function Ring({ profile, config }) {
         }
 
         if (pillarStretch && !stretchSkip.includes(p.name)) {
-          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale);
+          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale, stretchEasePower);
         }
       } else {
         deformMetal(p.base, target, delta, widthScale, boreZ);
@@ -600,7 +601,7 @@ export default function Ring({ profile, config }) {
         }
 
         if (pillarStretch && !stretchSkip.includes(p.name)) {
-          stretchPillarToHead(p.base, target, seat, stretchFromZ, stretchToZ, caratScale);
+          stretchPillarToHead(p.base, target, seat, stretchFromZ, stretchToZ, caratScale, stretchEasePower);
         }
       }
 

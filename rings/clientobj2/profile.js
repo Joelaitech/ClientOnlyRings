@@ -194,11 +194,25 @@ export default {
      * base. Excluding these two leaves them tracking only ring size, same
      * as the plain lower band, matching how little the head itself moves
      * this close to the seat.
+     *
+     * pillarStretchEasePower 4 — shape of the fromZ..toZ ramp (see
+     * stretchPillarToHead in core/deform.js): a plain linear/smoothstep ramp
+     * grows fastest through the pillar's own mid-height, exactly where the
+     * pristine cross-section is ALSO narrowing fastest (10.3mm near the
+     * band down to 2.5mm at the tip) — the two rates fighting flattened the
+     * taper out over an extended stretch, which is what read as the
+     * pillars bulging in the middle. Raising this to a power curve
+     * concentrates the correction into the last third or so of the ramp
+     * instead. 4 is the smallest power measured (per 0.5mm height bin, vs
+     * the pristine width) to give ZERO local widening anywhere on the
+     * pillar while still keeping the tip tracking the head's own landmark
+     * point tightly (gap stays under 0.14mm through 3.00 ct).
      */
     pillarStretch: true,
     pillarStretchFromZ: 2.50,
     pillarStretchToZ: 12.444,
     pillarStretchSkipParts: ['object_6', 'object_7'],
+    pillarStretchEasePower: 4,
   },
 
   /**
