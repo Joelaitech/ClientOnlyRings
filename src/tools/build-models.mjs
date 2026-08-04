@@ -44,9 +44,9 @@ const argSrc = (() => {
 const SRC = path.resolve(
   argSrc ??
   (process.env.RING_SRC ? path.join(process.env.RING_SRC, id) : null) ??
-  path.join('rings', id, 'source')
+  path.join('src/rings', id, 'source')
 );
-const OUT = path.resolve('rings', id, 'models');
+const OUT = path.resolve('src/rings', id, 'models');
 
 if (!fs.existsSync(SRC)) {
   console.error(`No CAD source found at: ${SRC}`);
@@ -59,7 +59,7 @@ if (!fs.existsSync(SRC)) {
 }
 
 // The profile tells us which source file is the shank and which is the head.
-const profilePath = path.resolve('rings', id, 'profile.js');
+const profilePath = path.resolve('src/rings', id, 'profile.js');
 if (!fs.existsSync(profilePath)) {
   console.error(`No profile at ${profilePath}`);
   console.error(`Run \`npm run profile ${id}\` first, then write the profile.`);

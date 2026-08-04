@@ -3,7 +3,7 @@ import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const RINGS_DIR = path.resolve('rings');
+const RINGS_DIR = path.resolve('src/rings');
 
 /** The three files DRACOLoader fetches from its decoder path. */
 const DRACO_FILES = [

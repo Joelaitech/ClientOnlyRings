@@ -1,6 +1,4 @@
 import React from 'react';
-import { RING_SIZE, CARAT, SHANK_WIDTH, METALS } from '../core/standards.js';
-import { defaultConfig } from '../core/configure.js';
 
 /** Swatch fills for the three metal options. */
 const SWATCH = {
@@ -22,8 +20,11 @@ function Row({ label, value, children }) {
 }
 
 export default function Controls({
-  profile, rings, onSelectRing, config, resolved, warnings, onChange,
+  profile, standards, configure, rings, onSelectRing, config, resolved, warnings, onChange,
 }) {
+  // This ring's OWN copy of standards/configure — not a shared module.
+  const { RING_SIZE, CARAT, SHANK_WIDTH, METALS } = standards;
+  const { defaultConfig } = configure;
   const { ringSize, carat, shankWidth, metal } = config;
 
   /** Per-ring carat bounds, falling back to the catalogue range. */

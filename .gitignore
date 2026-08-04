@@ -6,15 +6,15 @@ dist/
 # ---------------------------------------------------------------------------
 # Supplier CAD masters.
 #
-# These normally live OUTSIDE the project (see rings/README.md) because they
-# are ~35 MB of ASCII per ring and are never needed to run or ship the app —
-# only to re-measure or re-convert a ring. This rule is a safety net for when
-# someone drops them in the tree anyway.
+# These normally live OUTSIDE the project (see src/rings/README.md) because
+# they are ~35 MB of ASCII per ring and are never needed to run or ship the
+# app — only to re-measure or re-convert a ring. This rule is a safety net for
+# when someone drops them in the tree anyway.
 #
 # The shipped rings/*/models/*.glb ARE committed (581 KB for the first ring) —
 # they are what the app loads, so a fresh clone runs without any CAD files.
 # ---------------------------------------------------------------------------
-rings/*/source/
+src/rings/*/source/
 
 # Vite / editor noise
 .vite/

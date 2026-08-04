@@ -11,16 +11,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import * as THREE from 'three';
 
-import { METALS, DIAMOND, CARAT, SHANK_WIDTH, RING_SIZE } from '../core/standards.js';
-import {
-  deformMetal, deformStoneRigid, deformHead, blendShankToHead,
-  bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
-  dropSeat, fixMirroredStone, extendPillarZ, extendStoneZ, shiftPillarBelow,
-  buildArchFillerTopology, sampleArchFillerPositions,
-  stretchPillarToHead, stretchStoneToHead,
-} from '../core/deform.js';
-import { radialDelta } from '../core/configure.js';
-import { modelUrl } from '../rings/index.js';
+import { getRingModule, modelUrl } from '../rings/index.js';
 
 /**
  * ONE shared Draco instance, served from our own /draco/ rather than a CDN.
@@ -32,8 +23,9 @@ import { modelUrl } from '../rings/index.js';
 const dracoLoader = new DRACOLoader().setDecoderPath('/draco/');
 const withDraco = (loader) => loader.setDRACOLoader(dracoLoader);
 
-/** Build the three.js materials once per metal choice. */
-function useMaterials(metalId) {
+/** Build the three.js materials once per metal choice, from THIS ring's own standards.js. */
+function useMaterials(metalId, standards) {
+  const { METALS, DIAMOND } = standards;
   return useMemo(() => {
     const m = METALS[metalId] ?? METALS.yellowGold;
 
@@ -58,7 +50,7 @@ function useMaterials(metalId) {
     });
 
     return { metal, diamond };
-  }, [metalId]);
+  }, [metalId, standards]);
 }
 
 /**
@@ -86,7 +78,8 @@ function centroidOf(buf) {
  * Names come from the glTF NODES (that is where OBJ group names land after
  * conversion), which is what the Diamond_* material rule keys on.
  */
-function prepare(obj, skip) {
+function prepare(obj, skip, deform) {
+  const { fixMirroredStone, centroidXZ } = deform;
   const parts = [];
   obj.traverse((child) => {
     if (!child.isMesh) return;
@@ -168,12 +161,12 @@ function prepare(obj, skip) {
  * Returns null when the profile has no archFiller — a complete no-op for
  * every ring that does not opt in.
  */
-function buildFillerPart(profile) {
+function buildFillerPart(profile, deform) {
   const f = profile.head?.archFiller;
   if (!f) return null;
 
   const n = f.slices ?? 17;
-  const indices = buildArchFillerTopology(n);
+  const indices = deform.buildArchFillerTopology(n);
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 4 * 3), 3));
   geom.setIndex(new THREE.BufferAttribute(indices, 1));
@@ -199,7 +192,7 @@ function buildFillerPart(profile) {
  * target array for this render — that is the whole point, it needs
  * everyone else's finished result, not their pristine base shape.
  */
-function updateArchFiller(fillerPart, shankParts, config) {
+function updateArchFiller(fillerPart, shankParts, config, deform) {
   const belowParts = shankParts
     .filter((p) => config.belowParts.includes(p.name))
     .map((p) => ({ name: p.name, target: p.geometry.attributes.position.array }));
@@ -209,7 +202,7 @@ function updateArchFiller(fillerPart, shankParts, config) {
   if (!belowParts.length || !aboveParts.length) return;
 
   const n = config.slices ?? 17;
-  const positions = sampleArchFillerPositions(
+  const positions = deform.sampleArchFillerPositions(
     n, config.xMin, config.xMax, config.xToleranceMM ?? 0.25,
     config.halfWidthY ?? 1.05, belowParts, aboveParts
   );
@@ -223,22 +216,37 @@ function updateArchFiller(fillerPart, shankParts, config) {
 export default function Ring({ profile, config }) {
   const { ringSize, carat, shankWidth, metal } = config;
 
+  /**
+   * THIS RING'S OWN deform/configure/standards — every ring folder is fully
+   * self-contained, so nothing below reaches into a shared core/ module.
+   */
+  const ringModule = useMemo(() => getRingModule(profile.id), [profile.id]);
+  const { deform, configure, standards } = ringModule;
+  const {
+    deformMetal, deformStoneRigid, deformHead, blendShankToHead,
+    bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
+    dropSeat, extendPillarZ, extendStoneZ, shiftPillarBelow,
+    stretchPillarToHead, stretchStoneToHead,
+  } = deform;
+  const { radialDelta } = configure;
+  const { CARAT, SHANK_WIDTH, RING_SIZE } = standards;
+
   const shankGltf = useLoader(GLTFLoader, modelUrl(profile, 'shank'), withDraco);
   const headGltf = useLoader(GLTFLoader, modelUrl(profile, 'head'), withDraco);
 
-  const { metal: metalMat, diamond: diamondMat } = useMaterials(metal);
+  const { metal: metalMat, diamond: diamondMat } = useMaterials(metal, standards);
 
   // prepare() deep-copies each geometry, so this mount never writes into the
   // buffers useLoader has cached — see the note there.
   const shankParts = useMemo(() => {
-    const parts = prepare(shankGltf.scene, profile.skipParts);
-    const filler = buildFillerPart(profile);
+    const parts = prepare(shankGltf.scene, profile.skipParts, deform);
+    const filler = buildFillerPart(profile, deform);
     if (filler) parts.push(filler);
     return parts;
-  }, [shankGltf, profile.skipParts, profile.head?.archFiller]);
+  }, [shankGltf, profile.skipParts, profile.head?.archFiller, deform]);
   const headParts = useMemo(
-    () => prepare(headGltf.scene),
-    [headGltf]
+    () => prepare(headGltf.scene, undefined, deform),
+    [headGltf, deform]
   );
 
   /**
@@ -1241,14 +1249,15 @@ export default function Ring({ profile, config }) {
      */
     if (profile.head.archFiller) {
       const filler = shankParts.find((p) => p.isArchFiller);
-      if (filler) updateArchFiller(filler, shankParts, profile.head.archFiller);
+      if (filler) updateArchFiller(filler, shankParts, profile.head.archFiller, deform);
     }
   }, [shankParts, delta, ringSize, shankWidth, carat, profile, boreZ,
       headOffset, blendFromZ, blendFullZ, blendSkipParts, blendOnlyShrinking,
       slideDirs, accentSlideSet,
       bend, bendAmount, hinge, hingeAmount, drop, dropMM, dropRamp,
       rigidDropStones, extend, extendAmount,
-      bandLift, bandLiftAmount, bandLiftBottom, bandLiftBottomAmount, boreGuardCfg]);
+      bandLift, bandLiftAmount, bandLiftBottom, bandLiftBottomAmount, boreGuardCfg,
+      deform]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**
@@ -1368,7 +1377,7 @@ export default function Ring({ profile, config }) {
       }
       p.geometry.computeBoundingSphere();
     }
-  }, [headParts, headOffset, carat, profile, delta, boreZ, dropMM]);
+  }, [headParts, headOffset, carat, profile, delta, boreZ, dropMM, deform, standards]);
 
   return (
     <group>

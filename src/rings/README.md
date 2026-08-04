@@ -1,6 +1,10 @@
 # Adding a ring
 
-Five steps. Nothing in `core/` or `src/` changes.
+Every ring folder is fully self-contained: its own `profile.js`, its own
+`deform.js`, its own `configure.js`, its own `standards.js`, its own
+`models/`. Nothing is shared between ring folders — copying an existing
+ring's folder and editing the copy can never conflict with anyone else's
+ring, because no file is touched by more than one ring.
 
 ```bash
 # 1. put the supplier's OBJ files somewhere OUTSIDE the project
@@ -8,7 +12,17 @@ Five steps. Nothing in `core/` or `src/` changes.
 SRC=~/Downloads/ring-cad-masters/<id>
 
 npm run profile <id> -- --src "$SRC"      # 2. measure the mesh
-cp rings/clientobj2/profile.js rings/<id>/profile.js   # 3. fill in the numbers
+
+# 3. copy an existing ring's folder as the starting point — profile,
+#    deform, configure, standards and the bundle index all come along
+cp src/rings/clientobj2/profile.js   src/rings/<id>/profile.js
+cp src/rings/clientobj2/deform.js    src/rings/<id>/deform.js
+cp src/rings/clientobj2/configure.js src/rings/<id>/configure.js
+cp src/rings/clientobj2/standards.js src/rings/<id>/standards.js
+cp src/rings/clientobj2/index.js     src/rings/<id>/index.js
+#    then fill in profile.js's numbers, and deform.js/configure.js/
+#    standards.js if this ring needs behaviour the copied ones don't have
+
 npm run models  <id> -- --src "$SRC"      # 4. OBJ -> Draco GLB
 npm run verify  <id>                      # 5. prove it before shipping
 ```
@@ -22,6 +36,10 @@ can be dropped. The CAD masters for `clientobj2` are in
 | | Committed | Needed to run the app | Needed to add/re-convert a ring |
 |---|---|---|---|
 | `rings/<id>/profile.js` | yes | yes | yes |
+| `rings/<id>/deform.js` | yes | yes | yes |
+| `rings/<id>/configure.js` | yes | yes | yes |
+| `rings/<id>/standards.js` | yes | yes | yes |
+| `rings/<id>/index.js` | yes | yes | yes |
 | `rings/<id>/models/*.glb` | yes (581 KB) | **yes** | no |
 | CAD `*.obj` (outside repo) | no | no | **yes** |
 | `dist/` | no | it *is* the app | no |
@@ -37,11 +55,14 @@ instead of a 546 KB mesh, and the ring never loads. `vite preview` hides this
 compression settings, to diff against a client revision, or to run any
 geometry analysis that welding destroyed.
 
-Then register it in `rings/index.js`:
+Then register the bundle in `rings/index.js`:
 
 ```js
-import myRing from './myRing/profile.js';
-export const RINGS = { [clientobj2.id]: clientobj2, [myRing.id]: myRing };
+import * as myRing from './myRing/index.js';
+export const RING_MODULES = {
+  [clientobj2.profile.id]: clientobj2,
+  [myRing.profile.id]: myRing,
+};
 ```
 
 The model picker appears in the UI automatically once there is more than one.

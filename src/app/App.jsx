@@ -11,8 +11,7 @@ import * as THREE from 'three';
 
 import Ring from './Ring.jsx';
 import Controls from './Controls.jsx';
-import { getRing, DEFAULT_RING_ID, RING_LIST } from '../rings/index.js';
-import { defaultConfig, resolve, validate } from '../core/configure.js';
+import { getRingModule, DEFAULT_RING_ID, RING_LIST } from '../rings/index.js';
 
 function Loader() {
   return (
@@ -27,7 +26,12 @@ function Loader() {
 
 export default function App() {
   const [ringId, setRingId] = useState(DEFAULT_RING_ID);
-  const profile = useMemo(() => getRing(ringId), [ringId]);
+  // Each ring is fully self-contained: its own profile AND its own
+  // configure.js — the functions below are THIS ring's own copy, not a
+  // shared one.
+  const ringModule = useMemo(() => getRingModule(ringId), [ringId]);
+  const { profile, configure } = ringModule;
+  const { defaultConfig, resolve, validate } = configure;
 
   // Each ring has its own master values, so the config resets when the ring
   // changes — carrying a 1.99 mm width onto a ring modelled at 2.4 mm would
@@ -40,9 +44,9 @@ export default function App() {
   const set = (patch) => setConfig((c) => ({ ...c, ...patch }));
 
   const selectRing = (id) => {
-    const next = getRing(id);
+    const nextModule = getRingModule(id);
     setRingId(id);
-    setConfig(defaultConfig(next));
+    setConfig(nextModule.configure.defaultConfig(nextModule.profile));
   };
 
   /**
@@ -157,6 +161,8 @@ export default function App() {
 
       <Controls
         profile={profile}
+        standards={ringModule.standards}
+        configure={ringModule.configure}
         rings={RING_LIST}
         onSelectRing={selectRing}
         config={config}

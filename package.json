@@ -11,9 +11,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "profile": "node tools/profile-ring.mjs",
-    "models": "node tools/build-models.mjs",
-    "verify": "node tools/verify-ring.mjs"
+    "profile": "node src/tools/profile-ring.mjs",
+    "models": "node src/tools/build-models.mjs",
+    "verify": "node src/tools/verify-ring.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^9.114.0",

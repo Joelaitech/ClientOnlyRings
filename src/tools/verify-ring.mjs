@@ -15,13 +15,10 @@ import { NodeIO } from '@gltf-transform/core';
 import { KHRDracoMeshCompression } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
 
-import { RING_SIZE, SHANK_WIDTH, CARAT } from '../core/standards.js';
-import { deformMetal, deformStoneRigid, centroidXZ } from '../core/deform.js';
-import { radialDelta } from '../core/configure.js';
-import { RINGS } from '../rings/index.js';
+import { RING_MODULES } from '../rings/index.js';
 
 const only = process.argv[2];
-const targets = only ? [RINGS[only]].filter(Boolean) : Object.values(RINGS);
+const targets = only ? [RING_MODULES[only]].filter(Boolean) : Object.values(RING_MODULES);
 if (!targets.length) {
   console.error(only ? `Unknown ring: ${only}` : 'No rings registered.');
   process.exit(1);
@@ -36,13 +33,18 @@ const io = new NodeIO()
 
 let failures = 0;
 
-for (const profile of targets) {
+for (const ringModule of targets) {
+  const { profile, deform, configure, standards } = ringModule;
+  const { deformMetal, deformStoneRigid, centroidXZ } = deform;
+  const { radialDelta } = configure;
+  const { RING_SIZE, SHANK_WIDTH } = standards;
+
   console.log(`\n${'='.repeat(72)}`);
   console.log(`${profile.id}  (${profile.sku} — ${profile.name})`);
   console.log('='.repeat(72));
 
   const CZ = profile.master.boreCenter.z;
-  const glb = path.resolve('rings', profile.id, 'models', profile.models.shank);
+  const glb = path.resolve('src/rings', profile.id, 'models', profile.models.shank);
   if (!fs.existsSync(glb)) {
     console.log(`  FAIL  missing ${path.relative(process.cwd(), glb)}`);
     failures++;

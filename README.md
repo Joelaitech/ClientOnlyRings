@@ -32,40 +32,50 @@ measured against the shipped GLB bytes.
 ## Layout
 
 ```
-core/       Ring-agnostic. Never changes when you add a ring.
-  standards.js   US size chart, carat maths, metals, diamond material
-  deform.js      the vertex deformer
-  configure.js   normalize / resolve / validate
+src/
+  app/        The React app — App.jsx, Controls.jsx, Ring.jsx, main.jsx.
+              Ring-agnostic: it takes a ring's bundle as a prop/lookup and
+              holds no per-ring knowledge itself.
 
-rings/      One folder per ring — see rings/README.md
-  index.js       the registry
-  <id>/
-    profile.js   ~40 measured numbers for that ring
-    models/      Draco-compressed GLB (581 KB for LR64530)
+  rings/      One folder per ring — see src/rings/README.md
+    index.js       the registry
+    <id>/
+      index.js     bundles this ring's profile + deform + configure + standards
+      profile.js   ~40 measured numbers for that ring
+      deform.js    this ring's OWN vertex deformer (not shared)
+      configure.js this ring's OWN normalize / resolve / validate
+      standards.js this ring's OWN size chart, carat maths, metals
+      models/      Draco-compressed GLB (581 KB for LR64530)
 
-src/        The React app. Takes a profile as a prop.
-tools/      profile → build → verify pipeline
+  tools/      profile → build → verify pipeline
 ```
 
-The split is the point: adding a ring means writing a profile and dropping in
-two GLBs. Nothing in `core/` or `src/` changes.
+Every ring folder is fully self-contained — its own deform math, its own
+configure/standards, its own models. Nothing is shared between ring folders,
+so tuning one ring can never conflict with another's files. Adding a ring
+means copying an existing ring's folder, writing a new profile, and dropping
+in two GLBs.
 
 ---
 
 ## Adding a ring
 
-See **[rings/README.md](rings/README.md)** for the full walkthrough. Short version:
+See **[src/rings/README.md](src/rings/README.md)** for the full walkthrough. Short version:
 
 ```bash
 SRC=~/Downloads/ring-cad-masters/<id>          # CAD lives outside the repo
 npm run profile <id> -- --src "$SRC"           # measure the mesh
-cp rings/clientobj2/profile.js rings/<id>/profile.js
+cp src/rings/clientobj2/profile.js src/rings/<id>/profile.js
+cp src/rings/clientobj2/deform.js src/rings/<id>/deform.js
+cp src/rings/clientobj2/configure.js src/rings/<id>/configure.js
+cp src/rings/clientobj2/standards.js src/rings/<id>/standards.js
+cp src/rings/clientobj2/index.js src/rings/<id>/index.js
 npm run models  <id> -- --src "$SRC"           # OBJ -> welded Draco GLB
 npm run verify  <id>                           # prove it before shipping
 ```
 
-Then one import line in `rings/index.js`. The model picker appears in the UI
-automatically once more than one ring is registered.
+Then one import line in `src/rings/index.js`. The model picker appears in the
+UI automatically once more than one ring is registered.
 
 ---
 
@@ -91,7 +101,7 @@ ring and are only needed to re-measure or re-convert. The committed GLBs are
 what the app loads, so a fresh clone runs without them. Keep the OBJs
 somewhere durable — Draco is lossy (12-bit normals) and cannot be reversed.
 
-**Don't delete `dist/rings/`.** It looks like a copy of `rings/*/models/` but
+**Don't delete `dist/rings/`.** It looks like a copy of `src/rings/*/models/` but
 it is the build output the browser fetches. Without it a real static host
 returns `index.html` in place of the GLB and no ring loads.
 
@@ -106,12 +116,12 @@ for most of the size win before Draco runs.
 **Environment maps are generated locally.** drei's `<Environment preset>`
 fetches an HDRI from a GitHub CDN at runtime, which breaks offline and makes
 every transmissive diamond render black until it resolves. The studio rig in
-`src/App.jsx` is built from `Lightformer`s instead. The Draco decoder is
+`src/app/App.jsx` is built from `Lightformer`s instead. The Draco decoder is
 likewise served from `node_modules` rather than a CDN.
 
 **Run `npm run verify` after any geometry change.** The deformer reads vertex
 positions directly, so a bad conversion or a wrong constant shows up as a
-mis-sized ring. The checks in `tools/verify-ring.mjs` caught several real bugs
+mis-sized ring. The checks in `src/tools/verify-ring.mjs` caught several real bugs
 during development, including a version where a ring set to US 13 physically
 gauged US 7.3.
 

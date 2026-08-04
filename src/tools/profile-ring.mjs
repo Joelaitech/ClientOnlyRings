@@ -33,7 +33,7 @@ const argSrc = (() => {
 const SRC = path.resolve(
   argSrc ??
   (process.env.RING_SRC ? path.join(process.env.RING_SRC, id) : null) ??
-  path.join('rings', id, 'source')
+  path.join('src/rings', id, 'source')
 );
 if (!fs.existsSync(SRC)) {
   console.error(`No CAD source found at: ${SRC}`);
