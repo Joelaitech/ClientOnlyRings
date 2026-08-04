@@ -92,26 +92,30 @@ export default function Controls({
         </div>
       </Row>
 
-      {/* ---- SHANK WIDTH ---- */}
-      <Row label="Band Width" value={`${shankWidth.toFixed(2)} mm`}>
-        <input
-          type="range"
-          min={SHANK_WIDTH.MIN}
-          max={SHANK_WIDTH.MAX}
-          step={SHANK_WIDTH.STEP}
-          value={shankWidth}
-          onChange={(e) => onChange({ shankWidth: parseFloat(e.target.value) })}
-        />
-        <div className="scale">
-          <span>{SHANK_WIDTH.MIN} mm</span>
-          <span className="mid">
-            {shankWidth === master.shankWidthMM
-              ? 'As modelled'
-              : `${resolved.shank.widthScale.toFixed(2)}× master`}
-          </span>
-          <span>{SHANK_WIDTH.MAX} mm</span>
-        </div>
-      </Row>
+      {/* ---- SHANK WIDTH ----
+           Hidden per-ring via profile.hideBandWidth — some mounts don't
+           support a resized band without the pavé/prongs no longer fitting. */}
+      {!profile.hideBandWidth && (
+        <Row label="Band Width" value={`${shankWidth.toFixed(2)} mm`}>
+          <input
+            type="range"
+            min={SHANK_WIDTH.MIN}
+            max={SHANK_WIDTH.MAX}
+            step={SHANK_WIDTH.STEP}
+            value={shankWidth}
+            onChange={(e) => onChange({ shankWidth: parseFloat(e.target.value) })}
+          />
+          <div className="scale">
+            <span>{SHANK_WIDTH.MIN} mm</span>
+            <span className="mid">
+              {shankWidth === master.shankWidthMM
+                ? 'As modelled'
+                : `${resolved.shank.widthScale.toFixed(2)}× master`}
+            </span>
+            <span>{SHANK_WIDTH.MAX} mm</span>
+          </div>
+        </Row>
+      )}
 
       {/* ---- CARAT ----
            Bounds are per-ring: an elongated stone or a heavy master mount

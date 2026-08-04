@@ -23,6 +23,9 @@ export default {
   subtitle: 'Pavé Shoulders',
   description: '18K · Natural Diamond',
 
+  /** No Band Width control for this ring — see Controls.jsx. */
+  hideBandWidth: true,
+
   models: {
     shank: 'shank.glb',
     head: 'head.glb',
@@ -58,8 +61,8 @@ export default {
     /** Long axis, along Y. Measured 8.000; spec sheet 8.0 x 5.1. */
     stoneMM: 8.000,
 
-    /** Full catalogue range. */
-    caratMin: 0.25,
+    /** Restricted range for this ring: 1.00-3.00 ct only. */
+    caratMin: 1.00,
     caratMax: 3.00,
 
     /** Measured Y span on the plain lower arc. Matches the sheet's 2.1 MM. */

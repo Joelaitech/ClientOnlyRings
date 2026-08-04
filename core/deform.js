@@ -725,6 +725,125 @@ export function bendStoneToHead(
   }
 }
 
+/**
+ * Alternative to bendPillarToHead() for the LENGTH (Z) axis, plus an
+ * optional PROPORTIONAL X scale, to keep the pillar meeting the head as
+ * carat changes. Both use the same idea as bendPillarToHead's own formulas —
+ * X scales by `(scale - 1) * w`, Z is `(z - seatZ) * (scale - 1)` reaching
+ * full strength at `toZ` — but ramped over a much WIDER span (`fromZ` to
+ * `toZ`, e.g. from the lowest pavé stone to the pillar's own tip) instead of
+ * bendPillarToHead's narrow seatZ-to-fullAtZ band. That is what actually
+ * caused the earlier "structure breaking" report: cramming up to 44% of
+ * scale change into half a millimetre of height, not the scale itself.
+ * Spread over ~10 mm instead, the same proportional scale reads as a smooth
+ * taper, not a kink.
+ *
+ * X is a genuine PROPORTIONAL scale (each vertex's own x), not a fixed shift
+ * — an earlier version added the SAME absolute offset to every vertex
+ * regardless of its own x (sized to match one landmark point), which grows
+ * a vertex near the centre by a much larger fraction of its own (small)
+ * x than a vertex already far out — e.g. at 3.00 ct a vertex at x=-0.5 grew
+ * 248% while one at x=-9 grew only 14%. That is what bulged the middle of
+ * the cross-section outward. A proportional scale grows every vertex by
+ * the SAME percentage (44% at 3.00 ct, uniformly), which is exactly a
+ * smooth widening, not a bulge — and it still lands the pillar's own top
+ * exactly on the head's landmark point, because that landmark's x is just
+ * one more vertex under the same formula.
+ *
+ * Z's total is still computed ONCE at `toZ` and ramped by height FRACTION
+ * (not evaluated at each vertex's own z) for the reason noted before:
+ * `fromZ` sits below `seatZ` here, and (z - seatZ) * (scale - 1) flips sign
+ * below the seat, which would push the lower stones away from the head.
+ * X has no such pivot to flip around, so each vertex's own x is safe to use
+ * directly.
+ *
+ * THE RAMP SHAPE ITSELF also matters, which a proportional scale alone does
+ * not fix. A plain smoothstep ramp GROWS fastest through the MIDDLE of the
+ * fromZ..toZ span — right where this pillar's own pristine cross-section is
+ * already narrowing fastest (it tapers from ~10.3 mm wide near the band to
+ * ~2.5 mm at the tip). The two rates fighting each other flattens the
+ * taper out over an extended middle stretch (measured: pristine width drops
+ * 9.9 -> 9.3 mm between Z 4-5, but with smoothstep the corrected width only
+ * drops 9.92 -> 9.90 mm over that same span) — a taper that stops tapering
+ * reads as a bulge, which is what was reported.
+ *
+ * `Math.pow(t, EASE_POWER)` instead stays near zero for most of the ramp and
+ * only rises through the last third or so before `toZ`, so the pristine
+ * taper is left untouched through the lower-middle pillar and the
+ * correction concentrates higher up — smooth (a power function has no
+ * discontinuity, unlike a hard cutoff), but concentrated enough that it no
+ * longer fights the natural taper. EASE_POWER 4 was chosen by comparing the
+ * corrected width profile against the pristine one directly, per 0.5 mm
+ * height bin: it is the smallest power with ZERO local widening anywhere
+ * along the pillar (a strictly monotonic taper, matching pristine to
+ * within 0.01 mm through the lower half) while still keeping the top
+ * tracking the head's own landmark point tightly. Higher powers (6, 8)
+ * track the pristine taper even more closely in the middle but concentrate
+ * the correction into a shorter, steeper final stretch, which measurably
+ * loosened how closely the very tip lands on the head's target point — 4
+ * was the better balance of the two.
+ *
+ * Each pavé stone still only ever translates as a whole (see
+ * stretchStoneToHead below), so a stone is never reshaped — only its
+ * position moves, by the same proportional/fractional rule.
+ *
+ * @param {Float32Array} base    pristine shank-metal positions
+ * @param {Float32Array} target  buffer already written by deformMetal
+ * @param {number} seatZ    head's seat plane — same value deformHead uses
+ * @param {number} fromZ    height below which nothing moves (an anchor —
+ *   e.g. the bottom of the lowest pavé stone on the pillar)
+ * @param {number} toZ      height at which the Z stretch reaches deformHead's
+ *   own unconditional Z formula in full — e.g. the pillar's own top, where
+ *   it welds to the head
+ * @param {number} scale    carat linear scale, same value passed to deformHead
+ */
+const PILLAR_STRETCH_EASE_POWER = 4;
+
+export function stretchPillarToHead(base, target, seatZ, fromZ, toZ, scale) {
+  const totalStretchZ = (toZ - seatZ) * (scale - 1);
+  const span = toZ - fromZ;
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z <= fromZ) continue;
+    const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+    const w = Math.pow(t, PILLAR_STRETCH_EASE_POWER);
+    target[i + 2] += totalStretchZ * w;
+    target[i] += base[i] * (scale - 1) * w;
+  }
+}
+
+/**
+ * Rigid counterpart of stretchPillarToHead() for shank ACCENT STONES — moves
+ * the whole stone by the SAME rules (proportional X using its own centroid,
+ * fixed-total-fraction Z, same ease-in ramp shape), evaluated once at its
+ * centroid, so a stone higher up the pillar simply lands further from its
+ * neighbour below it (more space) and further out sideways, rather than
+ * being stretched itself.
+ *
+ * @param {Float32Array} target    buffer already written by deformStoneRigid
+ * @param {{x:number,z:number}} centroid    stone centroid in pristine model space
+ * @param {number} seatZ
+ * @param {number} fromZ
+ * @param {number} toZ
+ * @param {number} scale
+ */
+export function stretchStoneToHead(target, centroid, seatZ, fromZ, toZ, scale) {
+  const z = centroid.z;
+  if (z <= fromZ) return;
+  const totalStretchZ = (toZ - seatZ) * (scale - 1);
+  const span = toZ - fromZ;
+  const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+  const w = Math.pow(t, PILLAR_STRETCH_EASE_POWER);
+  const dz = totalStretchZ * w;
+  const dx = centroid.x * (scale - 1) * w;
+
+  for (let i = 0; i < target.length; i += 3) {
+    target[i] += dx;
+    target[i + 2] += dz;
+  }
+}
+
 /** Centroid of a position buffer, in the XZ plane. */
 export function centroidXZ(pos) {
   let sx = 0;

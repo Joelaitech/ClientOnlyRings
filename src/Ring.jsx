@@ -15,7 +15,7 @@ import { METALS, DIAMOND, CARAT, SHANK_WIDTH, RING_SIZE } from '../core/standard
 import {
   deformMetal, deformStoneRigid, deformHead, blendShankToHead,
   bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
-  fixMirroredStone,
+  fixMirroredStone, stretchPillarToHead, stretchStoneToHead,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
@@ -372,6 +372,34 @@ export default function Ring({ profile, config }) {
     const thickenMM = (profile.head.pillarThickenMM ?? 0) + perSize * sizeSteps;
 
     /**
+     * PILLAR STRETCH — an alternative to the pillar bend above, ramped over
+     * a much wider height span (see stretchPillarToHead in core/deform.js).
+     * Explicit opt-in, same as pillarBend, via profile.head.pillarStretch —
+     * used where the bend's narrow ramp squeezed/stretched a pavé row too
+     * abruptly and distorted its settings; spreading the SAME kind of
+     * correction from `pillarStretchFromZ` (an anchor — nothing at or below
+     * it moves) to `pillarStretchToZ` (where it reaches deformHead's own
+     * formula in full, matching the head exactly) reads as a smooth taper
+     * instead of a kink. Runs at every carat: it is 0 at the master by
+     * construction (scale = 1 there), same as the bend.
+     */
+    const pillarStretch = profile.head.pillarStretch === true;
+    const stretchFromZ = profile.head.pillarStretchFromZ;
+    const stretchToZ = profile.head.pillarStretchToZ;
+    /**
+     * Parts the stretch must NOT touch. It selects purely by height (a smooth
+     * ramp from stretchFromZ to stretchToZ), which also catches structures
+     * that reach partway into that band without needing to travel all the
+     * way to stretchToZ themselves — a smooth inner rail that
+     * welds right at the seat, say, rather than the outer pillar that
+     * actually needs to travel all the way up to meet the head at its far
+     * tip. Naming them here keeps them tracking only their own natural
+     * (near-zero, since the head itself barely moves right at the seat)
+     * position, instead of overshooting past where the head actually is.
+     */
+    const stretchSkip = profile.head.pillarStretchSkipParts ?? [];
+
+    /**
      * RIGID-ABOVE-SIZE PARTS — small details that ride the shank but must not
      * be reshaped by it.
      *
@@ -498,6 +526,10 @@ export default function Ring({ profile, config }) {
             holdScale, holdFullZ
           );
         }
+
+        if (pillarStretch && !stretchSkip.includes(p.name)) {
+          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale);
+        }
       } else if (p.isStone) {
         // Stones ignore widthScale — they keep their size and stay centred
         // on Y = 0 however wide the band gets.
@@ -527,6 +559,10 @@ export default function Ring({ profile, config }) {
             target, p.centroid, seat, full, caratScale, bendFromZ, bulgeMM,
             holdScale, holdFullZ
           );
+        }
+
+        if (pillarStretch && !stretchSkip.includes(p.name)) {
+          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale);
         }
       } else {
         deformMetal(p.base, target, delta, widthScale, boreZ);
@@ -561,6 +597,10 @@ export default function Ring({ profile, config }) {
             p.base, target, seat, full, caratScale, bendFromZ, bulgeMM,
             holdScale, holdFullZ, thickenMM, boreZ
           );
+        }
+
+        if (pillarStretch && !stretchSkip.includes(p.name)) {
+          stretchPillarToHead(p.base, target, seat, stretchFromZ, stretchToZ, caratScale);
         }
       }
 
