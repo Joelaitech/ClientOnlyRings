@@ -268,6 +268,168 @@ export function deformHead(base, target, scale, seatZ, fullAtZ, liftMM = 0) {
 }
 
 /**
+ * LOWER THE JOINT ITSELF as carat drops, instead of closing it by swinging the
+ * shoulders inward over a head that shrinks in place.
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS
+ *
+ * deformHead scales the head about `seatZ` and FREEZES Z at or below that
+ * plane, so the head's floor is nailed to one height at every weight while its
+ * top collapses toward it. Measured on the oval, 1.50 -> 0.25 ct:
+ *
+ *     prong tips   15.652 -> 13.211 mm   (-2.441)
+ *     head floor    9.679 ->  9.679 mm   ( 0.000)
+ *
+ * The head therefore does not descend, it DEFLATES onto a fixed floor. The
+ * shoulder rails, which are modelled to clasp a full-height head, then have to
+ * reach down and inward to find it — which is what the 14 deg hinge and its
+ * seat pull do. At full strength that reads as the rails arching over and
+ * swallowing the setting: a different STRUCTURE, not a smaller stone.
+ *
+ * A bench jeweller setting a lighter stone in the same mount does the
+ * opposite: the head sits LOWER in the shank and keeps its own proportions,
+ * with the rails meeting it at their modelled angle. That is what this does —
+ * translate the whole joint DOWN by `dropMM`, so the head keeps its shape and
+ * its relationship to the rails, and only its height in the ring changes.
+ *
+ * IT IS A PURE TRANSLATION, WHICH IS THE ENTIRE POINT.
+ *
+ * Nothing is scaled, sheared or re-proportioned, so the head cannot splay and
+ * the rails cannot bow. The head takes the drop as one rigid body (applied at
+ * its own call site, alongside the ring-size offset), and the shank takes the
+ * SAME distance through this function, ramped in by height so the bore, the
+ * band, the pave and the gallery below `fromZ` are bit-identical to before.
+ * Head and shank move by one shared scalar, so the joint they form travels
+ * without opening by construction.
+ *
+ * WHY THE RAMP IS NEEDED ON THE SHANK BUT NOT THE HEAD.
+ *
+ * The head is free-floating above the joint, so it can translate wholesale.
+ * The shank cannot: its lower run IS the finger hole and must not move at all.
+ * So the drop fades in from `fromZ` (0, still welded to the untouched shank)
+ * to `fullZ` (the full drop, travelling with the head). Below `fromZ` this
+ * function does nothing whatsoever.
+ *
+ * A STONE TAKES ONE OFFSET AT ITS CENTROID, never a per-vertex weight — a
+ * height-varying drop applied across a stone's own vertices would stretch it
+ * along Z. Same rule the rest of this file already uses for pave.
+ *
+ * @param {Float32Array} base    pristine shank positions (for the height test)
+ * WHY SOME METAL PARTS MUST TAKE THIS RIGIDLY TOO (`rigidAt` on metal).
+ * ---------------------------------------------------------------------------
+ * The ramp above varies the drop by height, which is right for a part that
+ * has to stay welded to the untouched shank below it — it eases the motion in.
+ * It is WRONG for the shoulder rail, for a mesh reason: the rail's triangles
+ * are long (measured 2.66 mm on the oval's object_5, 1.93 mm on object_44), so
+ * a single edge spans a large slice of the ramp and its two ends get
+ * materially different drops. Measured worst edge-length change on those two
+ * parts, at a 1.0 mm drop over a 9.7 -> 12.0 ramp: 0.555 mm — the rail is
+ * physically stretched, not moved.
+ *
+ * Widening the ramp only dilutes it (0.368 mm at fullZ 13.5, 0.275 at 15.0,
+ * 0.152 at 18.0) and never reaches zero, because the stretch is a property of
+ * the edge spanning ANY gradient. Worse, a ramp that tall runs past the top of
+ * the ring itself (15.65 mm), so the rail would never reach the full drop the
+ * head takes and the joint would reopen — trading a tear for a gap.
+ *
+ * The rail is exactly the piece that must travel with the head AS ONE BODY, so
+ * it should take the drop the way the head does: one offset, applied to every
+ * vertex. Passing a `rigidAt` for a metal part does that — same code path the
+ * stones use, since "translate rigidly, never reshape" is the same requirement.
+ * Zero edge stretch by construction, because every vertex moves identically.
+ *
+ * Parts that genuinely need the eased ramp (anything bridging the moving joint
+ * and the static shank) simply pass `rigidAt = null` and are unaffected.
+ *
+ * @param {Float32Array} base    pristine shank positions (for the height test)
+ * @param {Float32Array} target  buffer already written by the passes above
+ * @param {number} dropMM        how far the joint descends (0 = off)
+ * @param {number} fromZ         height where the drop starts easing in
+ * @param {number} fullZ         height at which it reaches the full drop
+ * @param {{z:number}|null} [rigidAt]  a point to evaluate the drop ONCE at —
+ *   a stone's centroid, or a metal part's, when that part must translate as a
+ *   rigid body rather than flex through the ramp. null = per-vertex ramp.
+ *
+ * A PART THAT IS BOTH THE JOINT AND THE BAND (`split`).
+ * ---------------------------------------------------------------------------
+ * The two modes above assume a part is EITHER up at the joint (rigid) or
+ * spanning the ramp (per-vertex). The oval's object_5/object_44 are neither:
+ * each is a whole half of the shank, running Z -9.53 to 13.30, so one part is
+ * simultaneously the rail that clasps the head AND the band that carries nine
+ * pavé stones and forms the finger hole.
+ *
+ * Given fully rigid, the band came down with the head — measured at 0.25 ct,
+ * the band's lowest point fell 1.11 mm (-10.147 -> -11.258), the ring gauged
+ * US 6.38 instead of 6.5, and ten pavé stones (which correctly stay put) were
+ * left floating up to 0.416 mm above the metal that holds them. Given the
+ * per-vertex ramp instead, the band is perfect but the rail tears: 0.621 mm of
+ * stretch on a 0.98 mm edge at Z 10.4-11.3, a 63% distortion right at the
+ * joint. Widening the ramp does not resolve it — reaching a tolerable stretch
+ * needs a `fromZ` low enough to eat the finger hole (US 6.33 at fromZ 6,
+ * US 4.64 at fromZ -9.6).
+ *
+ * So `split` gives the part BOTH behaviours across one plane: every vertex
+ * above `split.aboveZ` takes the SAME full rigid offset (zero stretch where it
+ * clasps the head), everything below `split.fadeZ` is untouched (the band, the
+ * bore and the pavé are bit-identical), and the two are joined by a smoothstep
+ * over the gap between them.
+ *
+ * The blend costs a little stretch by construction — that is unavoidable for
+ * any offset that is nonzero at one end of an edge and zero at the other — so
+ * the window is placed where the part carries NOTHING: the oval's shank stones
+ * sit at Z <= 9.74 and then jump to 11.15, and `fadeZ`/`aboveZ` of 9.9/11.0 sit
+ * inside that empty gap. The residual stretch lands on bare metal between two
+ * stone rows instead of across a seat.
+ *
+ * @param {{aboveZ:number, fadeZ:number}|null} [split]  when set (with rigidAt),
+ *   the rigid offset is applied in full above `aboveZ`, faded to 0 at `fadeZ`,
+ *   and not at all below it.
+ */
+export function dropSeat(base, target, dropMM, fromZ, fullZ, rigidAt = null, split = null) {
+  if (!dropMM) return;
+  const span = fullZ - fromZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  if (rigidAt) {
+    if (rigidAt.z <= fromZ) return;
+    const w = span <= 0 ? 1 : smoothstep(Math.min(1, (rigidAt.z - fromZ) / span));
+    const dz = dropMM * w;
+
+    /**
+     * Rigid at the joint, untouched at the band. `dz` is the part's ONE rigid
+     * offset — the same scalar every vertex would have taken — gated by height
+     * against the PRISTINE mesh so the window cannot drift as other passes
+     * move the part.
+     */
+    if (split) {
+      const { aboveZ, fadeZ } = split;
+      const fadeSpan = aboveZ - fadeZ;
+      for (let i = 0; i < base.length; i += 3) {
+        const z = base[i + 2];
+        if (z <= fadeZ) continue;
+        const k = z >= aboveZ || fadeSpan <= 0
+          ? 1
+          : smoothstep((z - fadeZ) / fadeSpan);
+        target[i + 2] -= dz * k;
+      }
+      return;
+    }
+
+    for (let i = 2; i < target.length; i += 3) target[i] -= dz;
+    return;
+  }
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z <= fromZ) continue;
+    const w = span <= 0 ? 1 : smoothstep(Math.min(1, (z - fromZ) / span));
+    // Z only: the drop is vertical, so X (across the face) and Y (the ring
+    // axis, which the width control owns) must both stay exactly as found.
+    target[i + 2] -= dropMM * w;
+  }
+}
+
+/**
  * Bend the shoulder tips in and down to meet a small head.
  * ---------------------------------------------------------------------------
  * At the bottom of the carat range a uniformly-scaled head is both narrower
@@ -385,6 +547,17 @@ export function bendShoulders(
  * Only vertices ABOVE pivotZ move; at and below it, untouched, which is
  * where the segment stays attached to the rest of the shoulder.
  *
+ * EASE ZONE (`easeZ`) — without it the angle jumps from 0 to `maxAngleDeg` the
+ * instant a vertex crosses `pivotZ`, so the rail is dead straight on both
+ * sides of that height but bent by the full angle right at the seam — a
+ * crease, not a curve, because the two straight runs meet at a corner instead
+ * of tangent to each other. Ramping the angle itself with height, from 0 at
+ * `pivotZ` up to the full `maxAngleDeg` at `pivotZ + easeZ`, turns that corner
+ * into a continuous curve: each thin horizontal slice still only rotates (no
+ * slice is stretched or reshaped), but by a gradually increasing amount, so
+ * the tangent direction turns smoothly through the ease zone instead of
+ * snapping. 0 (default) reproduces the original hard hinge exactly.
+ *
  * `pivotXAbs` is a MAGNITUDE, not a signed coordinate — the two shoulders are
  * a mirrored pair of parts (one all-positive-X, one all-negative-X), so each
  * vertex's own sign picks which side's pivot (+pivotXAbs or -pivotXAbs) and
@@ -396,15 +569,33 @@ export function bendShoulders(
  * @param {number} pivotZ          Z of the hinge point — at or below this, untouched
  * @param {number} maxAngleDeg     rotation at amount = 1, in degrees
  * @param {{x:number,y:number,z:number}|null} rigidAt  stone centroid, or null for metal
+ * @param {number} [easeZ]  height above pivotZ over which the angle ramps from
+ *   0 to full, so the bend reads as a curve rather than a creased corner.
+ *   0 (default) = the original instant hinge.
  */
-export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg, rigidAt = null) {
+export function rotateShoulderTip(
+  target, amount, pivotXAbs, pivotZ, maxAngleDeg, rigidAt = null, easeZ = 0
+) {
   if (amount <= 0) return;
   const angle = (maxAngleDeg * Math.PI / 180) * amount;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  /**
+   * Per-height angle fraction: 0 exactly at pivotZ, smoothstep-ramped to 1 by
+   * pivotZ + easeZ. A rigid rotation still applies to any given vertex (it is
+   * not stretched), but neighbouring slices now rotate by slightly different
+   * angles across the ease zone, which is what bends the corner into a curve.
+   */
+  const angleAt = (z) => {
+    if (easeZ <= 0) return angle;
+    const t = Math.max(0, Math.min(1, (z - pivotZ) / easeZ));
+    return angle * smoothstep(t);
+  };
 
   const rotate = (x, z) => {
     const sign = x >= 0 ? 1 : -1;
     const pivotX = sign * pivotXAbs;
-    const theta = sign * angle;
+    const theta = sign * angleAt(z);
     const cosT = Math.cos(theta);
     const sinT = Math.sin(theta);
     const dx = x - pivotX;
@@ -442,7 +633,7 @@ export function rotateShoulderTip(target, amount, pivotXAbs, pivotZ, maxAngleDeg
 
     // The seat's own swing: same sign convention as rotate() above, so a
     // stone on either shoulder tilts the way its own side is tilting.
-    const theta = (rigidAt.x >= 0 ? 1 : -1) * angle;
+    const theta = (rigidAt.x >= 0 ? 1 : -1) * angleAt(rigidAt.z);
     const cosT = Math.cos(theta);
     const sinT = Math.sin(theta);
 

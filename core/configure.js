@@ -103,7 +103,6 @@ export function resolve(cfg, profile) {
       circumference: RING_SIZE.circumferenceMM(c.ringSize),
       widthMM: c.shankWidth,
       widthScale: SHANK_WIDTH.scale(c.shankWidth, m.shankWidthMM),
-      thicknessMM: m.thicknessMM,
     },
     head: headTransform(c.carat, c.ringSize, profile),
     stone: { mm: stoneMM, carat: c.carat, cut: profile.centerStone.cut },

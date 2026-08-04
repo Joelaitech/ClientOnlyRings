@@ -43,7 +43,7 @@ export const RING_SIZE = {
  * the relationship lives here.
  */
 export const CARAT = {
-  MIN: 0.25,
+  MIN: 1.0,
   MAX: 3.0,
   STEP: 0.25,
 

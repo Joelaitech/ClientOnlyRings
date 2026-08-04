@@ -59,7 +59,7 @@ export default {
     stoneMM: 8.000,
 
     /** Full catalogue range. */
-    caratMin: 0.25,
+    caratMin: 1.00,
     caratMax: 3.00,
 
     /** Measured Y span on the plain lower arc. Matches the sheet's 2.1 MM. */

@@ -15,7 +15,7 @@ import { METALS, DIAMOND, CARAT, SHANK_WIDTH, RING_SIZE } from '../core/standard
 import {
   deformMetal, deformStoneRigid, deformHead, blendShankToHead,
   bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
-  fixMirroredStone,
+  dropSeat, fixMirroredStone,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
@@ -57,6 +57,24 @@ function useMaterials(metalId) {
 
     return { metal, diamond };
   }, [metalId]);
+}
+
+/**
+ * Centroid of a position buffer in all three axes.
+ *
+ * Taken from the LIVE buffer, not the pristine one: each caller needs the
+ * stone's centroid as of the passes that have already run, which is where its
+ * seat actually is by then.
+ */
+function centroidOf(buf) {
+  let cx = 0, cy = 0, cz = 0;
+  const n = buf.length / 3;
+  for (let i = 0; i < buf.length; i += 3) {
+    cx += buf[i];
+    cy += buf[i + 1];
+    cz += buf[i + 2];
+  }
+  return { x: cx / n, y: cy / n, z: cz / n };
 }
 
 /**
@@ -230,6 +248,59 @@ export default function Ring({ profile, config }) {
   }, [shankParts, profile.head.accentSlideRanks]);
 
   /**
+   * STONES WHOSE SETTING TAKES THE RIGID SEAT DROP.
+   *
+   * seatDrop moves most shank metal through a height ramp but a named few —
+   * the rails and accent claws — RIGIDLY, by one offset (see dropSeat in
+   * core/deform.js). A stone bezel-set into one of those claws must inherit
+   * the SAME rigid offset, or the claw sinks out from under it.
+   *
+   * Measured on the oval at 0.25 ct before this existed: the stones at Z 10.44
+   * are set into object_27/object_22, which drop the full 1.000 mm, while the
+   * stones themselves took the ramp at their own height and dropped only
+   * 0.244 mm — 0.756 mm of separation, which is the pavé visibly hanging in
+   * mid-air above its own claws.
+   *
+   * Each stone is paired with the metal part its surface is CLOSEST to, over
+   * the pristine meshes, so the pairing is a fixed property of the model and
+   * nothing is hardcoded. A stone seated against ramped metal is left alone
+   * and keeps the ramp, which is correct for it.
+   */
+  const rigidDropStones = useMemo(() => {
+    const set = new Set();
+    const rigidParts = profile.head.seatDrop?.rigidParts;
+    if (!rigidParts?.length) return set;
+
+    const metal = shankParts.filter(
+      (p) => !p.isStone && rigidParts.includes(p.name)
+    );
+    if (!metal.length) return set;
+
+    // Only stones high enough to be in the joint region can be affected.
+    const fromZ = profile.head.seatDrop.fromZ ?? 0;
+
+    for (const s of shankParts) {
+      if (!s.isStone) continue;
+      const c = centroidXZ(s.base);
+      if (c.z <= fromZ) continue;
+
+      // Nearest metal part to this stone's centroid, rigid or not — a stone
+      // must follow whichever piece actually holds it.
+      let bestD = Infinity;
+      let bestRigid = false;
+      for (const p of shankParts) {
+        if (p.isStone) continue;
+        for (let i = 0; i < p.base.length; i += 3) {
+          const d = Math.hypot(p.base[i] - c.x, p.base[i + 2] - c.z);
+          if (d < bestD) { bestD = d; bestRigid = rigidParts.includes(p.name); }
+        }
+      }
+      if (bestRigid) set.add(s);
+    }
+    return set;
+  }, [shankParts, profile.head.seatDrop]);
+
+  /**
    * These geometries are clones this component owns, so it must free them.
    * Without this, every ring switch would leak a full set of GPU buffers —
    * ~190k vertices for the emerald shank alone.
@@ -265,10 +336,30 @@ export default function Ring({ profile, config }) {
    * measured to sit above the gallery and below the shoulder accents. Rings
    * with no hinge start at the seat, which is where their head meets the shank
    * by definition.
+   *
+   * `blendFullZ` defaults to `seatZ + 2.0` — a short ramp that is plenty at
+   * small-to-mid ring sizes. At large sizes `delta` grows past what that short
+   * span can absorb smoothly: the vertex's OWN radial offset (which the ramp
+   * is blending AWAY from) grows with ring size, so the same 2 mm of height
+   * has to shed a bigger and bigger offset, and the rail's outer edge bows in
+   * and springs back rather than tapering smoothly. Measured on the oval's
+   * shoulder rail (object_5), US 13 / 1.50 ct: the outer edge's slope peaks at
+   * 1.51x its own pristine rate mid-ramp before easing back to 1x at the tip —
+   * that overshoot-and-recover is what reads as a kink where the rails meet
+   * the head.
+   *
+   * Widening the ramp to cover the part's ENTIRE modelled height (the same fix
+   * already applied to seatDrop for the identical reason — see the oval
+   * profile's note on object_5/object_44) spreads the same total offset over
+   * more height, so the peak rate drops without changing the ramp's endpoints
+   * or the joint gap at all (measured tipGap unchanged at 0.132 mm across every
+   * window tried). `blendFullZAtTop` opts a profile into this; unset, every
+   * other ring keeps the original seatZ + 2.0 ramp untouched.
    */
   const blendFromZ = profile.head.shoulderHinge?.pivotZ
     ?? profile.head.seatZ ?? profile.head.pivotZ;
-  const blendFullZ = (profile.head.seatZ ?? profile.head.pivotZ) + 2.0;
+  const blendFullZ = profile.head.blendFullZAtTop
+    ?? (profile.head.seatZ ?? profile.head.pivotZ) + 2.0;
 
   /**
    * Shoulder bend strength: 1 at the bottom of the carat range, easing to 0 at
@@ -281,7 +372,15 @@ export default function Ring({ profile, config }) {
    */
   const bend = profile.head.shoulderBend ?? null;
   const caratFloor = profile.master.caratMin ?? CARAT.MIN;
-  const bendAmount = bend
+  /**
+   * Ramps below are only meaningful while the slider can actually reach
+   * below `belowCarat`. If the effective carat floor has been raised to or
+   * past that threshold (e.g. a catalogue-wide minimum bump), the ratio's
+   * denominator would flip sign and pin the "correction" fully ON at every
+   * reachable carat instead of OFF — the opposite of what an inert
+   * below-threshold rescue should do. Guard it to 0 in that case.
+   */
+  const bendAmount = bend && bend.belowCarat > caratFloor
     ? Math.max(0, Math.min(1,
         (bend.belowCarat - carat) / (bend.belowCarat - caratFloor)))
     : 0;
@@ -294,10 +393,35 @@ export default function Ring({ profile, config }) {
    * rotateShoulderTip in core/deform.js). Same amount-blending as bendAmount.
    */
   const hinge = profile.head.shoulderHinge ?? null;
-  const hingeAmount = hinge
+  const hingeAmount = hinge && hinge.belowCarat > caratFloor
     ? Math.max(0, Math.min(1,
         (hinge.belowCarat - carat) / (hinge.belowCarat - caratFloor)))
     : 0;
+
+  /**
+   * SEAT DROP — lower the whole head/shoulder joint as carat falls, rather
+   * than closing it by swinging the shoulders in over a head that shrinks in
+   * place. See dropSeat in core/deform.js for why the joint has to move.
+   *
+   * Head and shank both consume this ONE scalar — the head as a rigid
+   * translation in the carat effect below, the shank through dropSeat's
+   * height ramp — so the joint descends without opening.
+   *
+   * Same ramp shape as bendAmount/hingeAmount above (full travel at the carat
+   * floor, 0 at `belowCarat`), so the three compose smoothly and a profile
+   * that sets none of them is untouched.
+   */
+  const drop = profile.head.seatDrop ?? null;
+  /**
+   * The 0..1 carat ramp itself, shared by the joint drop and the rail extra
+   * below it so the two stay in lockstep — both must be exactly 0 at
+   * `belowCarat` and full at the carat floor.
+   */
+  const dropRamp = drop && drop.belowCarat > caratFloor
+    ? Math.max(0, Math.min(1,
+        (drop.belowCarat - carat) / (drop.belowCarat - caratFloor)))
+    : 0;
+  const dropMM = drop ? drop.maxMM * dropRamp : 0;
 
   // --- RING SIZE + WIDTH: deform the shank --------------------------------
   // Runs only when a shank parameter changes, not every frame. Both
@@ -600,16 +724,8 @@ export default function Ring({ profile, config }) {
        * moved, and they popped out of the shoulders.
        */
       if (bend) {
-        let seatAt = null;
-        if (p.isStone) {
-          // Centroid AFTER the size/width pass, which is where the seat now is.
-          let cx = 0, cy = 0, cz = 0;
-          const n = target.length / 3;
-          for (let i = 0; i < target.length; i += 3) {
-            cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
-          }
-          seatAt = { x: cx / n, y: cy / n, z: cz / n };
-        }
+        // Centroid AFTER the size/width pass, which is where the seat now is.
+        const seatAt = p.isStone ? centroidOf(target) : null;
         bendShoulders(
           target, bendAmount, bend.fromZ + delta, bend.tipZ + delta,
           bend.inwardMM, bend.downMM, seatAt, bend.bulgeMM ?? 0
@@ -617,19 +733,11 @@ export default function Ring({ profile, config }) {
       }
 
       if (hinge && !hinge.excludeParts?.includes(p.name)) {
-        let rigidAt = null;
-        if (p.isStone) {
-          // Centroid AFTER the size/width pass, matching bend's seatAt above.
-          let cx = 0, cy = 0, cz = 0;
-          const n = target.length / 3;
-          for (let i = 0; i < target.length; i += 3) {
-            cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
-          }
-          rigidAt = { x: cx / n, y: cy / n, z: cz / n };
-        }
+        // Centroid AFTER the size/width pass, matching bend's seatAt above.
+        const rigidAt = p.isStone ? centroidOf(target) : null;
         rotateShoulderTip(
           target, hingeAmount, hinge.pivotXAbs, hinge.pivotZ + delta,
-          hinge.maxAngleDeg, rigidAt
+          hinge.maxAngleDeg, rigidAt, hinge.easeZ ?? 0
         );
 
         /**
@@ -658,17 +766,9 @@ export default function Ring({ profile, config }) {
          * carat the hinge does not touch is bit-identical to before.
          */
         if (hinge.seatPull) {
-          let pullAt = null;
-          if (p.isStone) {
-            // Centroid AFTER the rotation above, so the stone rides the pull
-            // from where it now sits rather than from its pre-swing position.
-            let cx = 0, cy = 0, cz = 0;
-            const n = target.length / 3;
-            for (let i = 0; i < target.length; i += 3) {
-              cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
-            }
-            pullAt = { x: cx / n, y: cy / n, z: cz / n };
-          }
+          // Centroid AFTER the rotation above, so the stone rides the pull
+          // from where it now sits rather than from its pre-swing position.
+          const pullAt = p.isStone ? centroidOf(target) : null;
           bendShoulders(
             target, hingeAmount,
             hinge.seatPull.fromZ + delta, hinge.seatPull.tipZ + delta,
@@ -677,6 +777,158 @@ export default function Ring({ profile, config }) {
           );
         }
       }
+
+      /**
+       * SEAT DROP — LAST, so it translates whatever the passes above produced
+       * rather than being rotated or re-weighted by them. It is a pure Z
+       * translation, so ordering cannot change its magnitude; running it here
+       * simply means the hinge swings the rail and THEN the whole assembly
+       * descends, which is the intended composition.
+       *
+       * `+ delta` on both heights for the same reason the hinge and bend do
+       * it: sizing has already pushed this metal radially outward, so a fixed
+       * model-space height would sit at the wrong place on the deformed part.
+       *
+       * Stones take the rigid path (one offset at the centroid) — a
+       * height-varying drop applied per vertex would stretch them along Z.
+       */
+      if (dropMM || (drop && dropRamp && drop.railExtraMM)) {
+        const dropFromZ = (drop.fromZ ?? blendFromZ) + delta;
+        const dropFullZ = (drop.fullZ ?? blendFullZ) + delta;
+        /**
+         * Stones always translate rigidly. So do the METAL parts named by
+         * `rigidParts` — the shoulder rails and accent claws, whose long
+         * triangles would otherwise be stretched by the height ramp rather
+         * than moved by it (0.555 mm of edge stretch, measured; see dropSeat
+         * in core/deform.js). They are the pieces that must travel with the
+         * head as one body, so they take one offset like the head does.
+         *
+         * WHERE that offset is evaluated matters. A stone is small and sits
+         * entirely inside the ramp, so its own centroid is the right place.
+         * The rails are not: object_5/44 run from Z -9.53 to 13.30, so their
+         * centroids land at Z 5.2/4.4 — BELOW the ramp start, where the drop
+         * is zero. Evaluated there they would never move at all, and the
+         * joint they are supposed to carry would tear open.
+         *
+         * So a rigid metal part is evaluated at `rigidAtZ` — the joint height
+         * it is being asked to follow — rather than at its own middle. The
+         * profile states it once; it is the height where these parts actually
+         * meet the head.
+         */
+        const rigidAtZ = (drop.rigidAtZ ?? drop.fullZ) + delta;
+        let dropAt = null;
+        if (p.isStone) {
+          /**
+           * A stone set INTO one of the rigid parts must take that same rigid
+           * offset — otherwise its claw drops the full amount while the stone
+           * only takes the ramp at its own height, and the setting sinks out
+           * from under it (0.756 mm of separation, measured; see
+           * rigidDropStones above). Every other stone keeps the ramp.
+           */
+          dropAt = rigidDropStones.has(p)
+            ? { z: rigidAtZ }
+            : centroidOf(target);
+        } else if (drop.rigidParts?.includes(p.name)) {
+          dropAt = { z: rigidAtZ };
+        }
+
+        /**
+         * PARTS THAT ARE BOTH THE JOINT AND THE BAND.
+         *
+         * A `rigidParts` entry normally sits entirely up at the joint, so one
+         * offset for the whole part is right. The oval's object_5/object_44 are
+         * not like that: each is a whole HALF OF THE SHANK (Z -9.53..13.30), so
+         * translating it rigidly carried the band, the bore and nine pavé
+         * stones down with the head — measured at 0.25 ct, the band bottom fell
+         * 1.11 mm, the ring gauged US 6.38, and ten stones floated up to
+         * 0.416 mm off their seats. `splitParts` keeps the rigid offset where
+         * these parts clasp the head and fades it out to nothing before the
+         * band. See dropSeat in core/deform.js.
+         */
+        /**
+         * NO `+ delta` HERE, unlike dropFromZ/dropFullZ above.
+         *
+         * Those heights are compared against metal the earlier passes have
+         * already pushed outward, so they have to follow it. This window is
+         * different in two ways: dropSeat tests it against the PRISTINE `base`
+         * buffer, and what it is keyed to — the gap between two pavé rows, and
+         * the height where the rail meets the basket — are properties of the
+         * part's own modelled geometry that radial sizing does not move up or
+         * down. Shifting it by delta made it drift off the part entirely:
+         * measured on object_5 (pristine top Z 13.299), the window landed at
+         * Z 12.87-13.67 at US 13, so ZERO of its 2527 vertices took the offset,
+         * the rail stopped following the head, and the joint opened to 0.702 mm
+         * with the prong buried 0.332 mm below the shoulder. Held fixed, the
+         * split stays where it was measured at every size.
+         */
+        const split = drop.splitParts?.includes(p.name) && drop.splitZ
+          ? { aboveZ: drop.splitZ.aboveZ, fadeZ: drop.splitZ.fadeZ }
+          : null;
+
+        dropSeat(p.base, target, dropMM, dropFromZ, dropFullZ, dropAt, split);
+
+        /**
+         * RAIL EXTRA — sink the shoulder tips FURTHER than the joint, so the
+         * prong still stands proud of them at low carat.
+         *
+         * The head shrinks with carat but the rails do not: measured with the
+         * drop disabled entirely, the head's top falls 15.652 -> 13.211 mm from
+         * 1.50 to 0.25 ct while the rail tops hold at 13.322 mm. Clearance of
+         * the prong above the rails therefore collapses 2.329 -> 0.305 mm and
+         * the setting reads as swallowed between the shoulders.
+         *
+         * That is NOT caused by seatDrop — the drop moves head and rails
+         * together, so clearance is 0.305 mm at every value of maxMM including
+         * zero. It is the head's own carat scale, and it needs its own
+         * correction: lower the rails by a little MORE than the joint travels.
+         *
+         * Swept at 0.25 ct, resulting clearance:
+         *
+         *     extra   clearance      extra   clearance
+         *     0.00    0.305 mm       0.40    0.705 mm
+         *     0.20    0.505 mm       0.50    0.805 mm
+         *     0.35    0.655 mm  <-   0.60    0.905 mm
+         *
+         * 0.35 restores 0.655 mm, matching the 0.665 mm the ring has at
+         * 0.50 ct — the weight where the proportion still reads correctly and
+         * no correction is active at all. Applied only to the rigid parts (the
+         * rails and claws), on the same carat ramp as the drop, so it is 0 at
+         * and above `belowCarat` and every higher weight is untouched.
+         *
+         * Stones set into those rails ride along, for the same reason they
+         * inherit the rigid drop — otherwise the claw sinks and the stone
+         * stays put.
+         */
+        const railExtra = (drop.railExtraMM ?? 0) * dropRamp;
+        if (railExtra) {
+          const ridesRails = p.isStone
+            ? rigidDropStones.has(p)
+            : (drop.rigidParts?.includes(p.name) ?? false);
+          if (ridesRails) {
+            /**
+             * Gated by the SAME window as the drop above, for the same reason:
+             * on a part that is also the band, an ungated extra sinks the
+             * finger hole. Ungated this added the full 0.70 mm to the band
+             * bottom on top of the drop — 1.72 mm of total sag at Z -10.
+             */
+            if (split) {
+              const fadeSpan = split.aboveZ - split.fadeZ;
+              for (let i = 0; i < p.base.length; i += 3) {
+                const z = p.base[i + 2];
+                if (z <= split.fadeZ) continue;
+                const t = z >= split.aboveZ || fadeSpan <= 0
+                  ? 1
+                  : (z - split.fadeZ) / fadeSpan;
+                const k = t * t * (3 - 2 * t);
+                target[i + 2] -= railExtra * k;
+              }
+            } else {
+              for (let i = 2; i < target.length; i += 3) target[i] -= railExtra;
+            }
+          }
+        }
+      }
+
       attr.needsUpdate = true;
       /**
        * Metal only — the shoulder bends above are non-uniform, so the shipped
@@ -692,7 +944,8 @@ export default function Ring({ profile, config }) {
     }
   }, [shankParts, delta, ringSize, shankWidth, carat, profile, boreZ,
       headOffset, blendFromZ, blendFullZ, slideDirs, accentSlideSet,
-      bend, bendAmount, hinge, hingeAmount]);
+      bend, bendAmount, hinge, hingeAmount, drop, dropMM, dropRamp,
+      rigidDropStones]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**
@@ -784,9 +1037,19 @@ export default function Ring({ profile, config }) {
        * Every master row is unchanged. That is a fraction of a tenth of a mm of
        * joint traded for up to 1.4 mm of splay.
        */
+      /**
+       * SEAT DROP rides along here as part of the same rigid translation.
+       *
+       * The head is free-floating above the joint, so unlike the shank it
+       * needs no height ramp — the whole body descends by the full `dropMM`,
+       * which is exactly what keeps its shape and internal proportions
+       * untouched. The shank's ramped version of the same scalar carries the
+       * shoulder rails down with it (see dropSeat in core/deform.js), so the
+       * joint travels as one piece.
+       */
       for (let i = 0; i < target.length; i += 3) {
         target[i] += offX;
-        target[i + 2] += offZ;
+        target[i + 2] += offZ - dropMM;
       }
 
       attr.needsUpdate = true;
@@ -802,7 +1065,7 @@ export default function Ring({ profile, config }) {
       }
       p.geometry.computeBoundingSphere();
     }
-  }, [headParts, headOffset, carat, profile, delta, boreZ]);
+  }, [headParts, headOffset, carat, profile, delta, boreZ, dropMM]);
 
   return (
     <group>

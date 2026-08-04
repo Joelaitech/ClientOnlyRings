@@ -189,10 +189,7 @@ export default function Controls({
           <dd>{resolved.shank.innerDiameter.toFixed(2)} mm</dd>
 
           <dt>Band</dt>
-          <dd>
-            {resolved.shank.widthMM.toFixed(2)} mm wide ·{' '}
-            {resolved.shank.thicknessMM.toFixed(2)} mm thick
-          </dd>
+          <dd>{resolved.shank.widthMM.toFixed(2)} mm wide</dd>
         </dl>
       </div>
 
