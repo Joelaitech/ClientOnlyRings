@@ -15,7 +15,9 @@ import { METALS, DIAMOND, CARAT, SHANK_WIDTH, RING_SIZE } from '../core/standard
 import {
   deformMetal, deformStoneRigid, deformHead, blendShankToHead,
   bendShoulders, rotateShoulderTip, bendPillarToHead, bendStoneToHead, centroidXZ,
-  dropSeat, fixMirroredStone,
+  dropSeat, fixMirroredStone, extendPillarZ, extendStoneZ, shiftPillarBelow,
+  buildArchFillerTopology, sampleArchFillerPositions,
+  stretchPillarToHead, stretchStoneToHead,
 } from '../core/deform.js';
 import { radialDelta } from '../core/configure.js';
 import { modelUrl } from '../rings/index.js';
@@ -148,6 +150,76 @@ function prepare(obj, skip) {
   return parts;
 }
 
+/**
+ * Build the SYNTHETIC arch-filler part from `profile.head.archFiller` — a
+ * from-scratch bridge (see buildArchFillerTopology in core/deform.js), not
+ * anything loaded from a GLB. Only the TOPOLOGY is built here (fixed index
+ * buffer, placeholder positions); the actual shape is filled in on every
+ * render by updateArchFiller() below, which measures the live gap between
+ * two named part groups — so this keeps fitting even if the shoulder
+ * settings it bridges (shoulderHinge / pillarExtend / bandLift) get retuned
+ * later, without rebuilding this part.
+ *
+ * Marked `isArchFiller: true` so the main deform loop skips it (it has no
+ * `base` shape of its own to deform — see the note in the shank effect) and
+ * processes it in a second pass, after every other part's target position
+ * has been written for this render.
+ *
+ * Returns null when the profile has no archFiller — a complete no-op for
+ * every ring that does not opt in.
+ */
+function buildFillerPart(profile) {
+  const f = profile.head?.archFiller;
+  if (!f) return null;
+
+  const n = f.slices ?? 17;
+  const indices = buildArchFillerTopology(n);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 4 * 3), 3));
+  geom.setIndex(new THREE.BufferAttribute(indices, 1));
+
+  return {
+    name: f.name ?? '__archFiller',
+    geometry: geom,
+    isStone: false,
+    isArchFiller: true,
+    base: null,
+    centroid: { x: 0, z: 0 },
+  };
+}
+
+/**
+ * Second-pass update for the arch filler: reads the ALREADY-DEFORMED target
+ * positions of `belowParts`/`aboveParts` (matched by name against the same
+ * `shankParts` this filler lives in) and resamples the bridge to span
+ * whatever gap exists between them right now. See sampleArchFillerPositions
+ * in core/deform.js for the actual measurement.
+ *
+ * Must run AFTER the main per-part loop has written every other part's
+ * target array for this render — that is the whole point, it needs
+ * everyone else's finished result, not their pristine base shape.
+ */
+function updateArchFiller(fillerPart, shankParts, config) {
+  const belowParts = shankParts
+    .filter((p) => config.belowParts.includes(p.name))
+    .map((p) => ({ name: p.name, target: p.geometry.attributes.position.array }));
+  const aboveParts = shankParts
+    .filter((p) => config.aboveParts.includes(p.name))
+    .map((p) => ({ name: p.name, target: p.geometry.attributes.position.array }));
+  if (!belowParts.length || !aboveParts.length) return;
+
+  const n = config.slices ?? 17;
+  const positions = sampleArchFillerPositions(
+    n, config.xMin, config.xMax, config.xToleranceMM ?? 0.25,
+    config.halfWidthY ?? 1.05, belowParts, aboveParts
+  );
+  const attr = fillerPart.geometry.attributes.position;
+  attr.array.set(positions);
+  attr.needsUpdate = true;
+  fillerPart.geometry.computeVertexNormals();
+  fillerPart.geometry.computeBoundingSphere();
+}
+
 export default function Ring({ profile, config }) {
   const { ringSize, carat, shankWidth, metal } = config;
 
@@ -158,10 +230,12 @@ export default function Ring({ profile, config }) {
 
   // prepare() deep-copies each geometry, so this mount never writes into the
   // buffers useLoader has cached — see the note there.
-  const shankParts = useMemo(
-    () => prepare(shankGltf.scene, profile.skipParts),
-    [shankGltf, profile.skipParts]
-  );
+  const shankParts = useMemo(() => {
+    const parts = prepare(shankGltf.scene, profile.skipParts);
+    const filler = buildFillerPart(profile);
+    if (filler) parts.push(filler);
+    return parts;
+  }, [shankGltf, profile.skipParts, profile.head?.archFiller]);
   const headParts = useMemo(
     () => prepare(headGltf.scene),
     [headGltf]
@@ -331,11 +405,18 @@ export default function Ring({ profile, config }) {
   /**
    * Where the shank stops sizing on its own radius and starts riding the head's
    * offset. The ramp must clear everything BELOW the joint — the bore, the
-   * band, the pave and (on the oval) the gallery — so it starts at the shoulder
-   * hinge's pivot where a profile defines one, since that pivot was already
-   * measured to sit above the gallery and below the shoulder accents. Rings
-   * with no hinge start at the seat, which is where their head meets the shank
-   * by definition.
+   * band, the pave and (on the oval) the gallery.
+   *
+   * `profile.head.blendFromZ` is the explicit way to set this. Failing that,
+   * it falls back to the shoulder hinge's pivot — ONLY valid on a ring where
+   * that pivot is already known to sit above the gallery/bore. On pear that
+   * stopped being true once shoulderHinge.pivotZ was retuned down to -2.5 for
+   * an unrelated reason (moving the carat-driven pillar bend point) — this
+   * function then started running all the way down through the true bore
+   * surface, dragging it toward the head's single rigid offset instead of
+   * each vertex's own individual radial one, which is what turned the finger
+   * hole oval, worse the larger the ring size, at every carat (see
+   * blendFromZ in rings/pear/profile.js).
    *
    * `blendFullZ` defaults to `seatZ + 2.0` — a short ramp that is plenty at
    * small-to-mid ring sizes. At large sizes `delta` grows past what that short
@@ -356,10 +437,24 @@ export default function Ring({ profile, config }) {
    * window tried). `blendFullZAtTop` opts a profile into this; unset, every
    * other ring keeps the original seatZ + 2.0 ramp untouched.
    */
-  const blendFromZ = profile.head.shoulderHinge?.pivotZ
+  const blendFromZ = profile.head.blendFromZ
+    ?? profile.head.shoulderHinge?.pivotZ
     ?? profile.head.seatZ ?? profile.head.pivotZ;
   const blendFullZ = profile.head.blendFullZAtTop
     ?? (profile.head.seatZ ?? profile.head.pivotZ) + 2.0;
+  const blendSkipParts = profile.head.blendSkipParts ?? [];
+  /**
+   * `profile.head.blendOnlyShrinking` — opt-in: skip blendShankToHead
+   * entirely once the ring size is ABOVE the master (delta > 0), so the
+   * pillar keeps its own individual radial fan instead of being pulled
+   * straight toward the head's single fixed offset. A vertex's own radial
+   * direction points further outboard the higher up the pillar it sits, so
+   * left alone it reads as a curve leaning outward as the ring grows —
+   * which is what this is for, on a ring where that curved lean is the
+   * wanted look rather than a defect. Below the master (delta <= 0) the
+   * blend still runs as usual — this only changes the GROWING direction.
+   */
+  const blendOnlyShrinking = profile.head.blendOnlyShrinking === true;
 
   /**
    * Shoulder bend strength: 1 at the bottom of the carat range, easing to 0 at
@@ -422,6 +517,84 @@ export default function Ring({ profile, config }) {
         (drop.belowCarat - carat) / (drop.belowCarat - caratFloor)))
     : 0;
   const dropMM = drop ? drop.maxMM * dropRamp : 0;
+
+  /**
+   * PILLAR EXTEND — a carat correction, same amount-blending as
+   * shoulderHinge/bend above: 0 above `belowCarat`, ramping to full strength
+   * at the carat floor. Zero above the threshold means every carat this does
+   * not touch renders bit-identical to the plain mesh — the earlier
+   * unconditional version applied this at every carat including the 1.00 ct
+   * master, which is what needed fixing.
+   *
+   * Two stages, both optional and independently switchable:
+   *   1. extendPillarZ/extendStoneZ move the shoulder's existing material in
+   *      Z — stretching it further away (positive extendMM) or pulling it
+   *      shorter/more compact (negative), toward `fromZ` (no new geometry —
+   *      see the note in core/deform.js for why a real extrusion was not
+   *      attempted blind).
+   *   2. A second, separate rotateShoulderTip then bends that reshaped
+   *      section toward the head. Kept apart from `shoulderHinge`'s own
+   *      pivot so the two can be placed at different heights without
+   *      fighting.
+   */
+  const extend = profile.head.pillarExtend ?? null;
+  const extendAmount = extend
+    ? Math.max(0, Math.min(1,
+        (extend.belowCarat - carat) / (extend.belowCarat - caratFloor)))
+    : 0;
+
+  /**
+   * BAND LIFT — push the plain round band's TOP (object_5/object_40, the
+   * part the head's stem actually rests on — separate from the pillars
+   * object_1/object_2 above) up or down, independent of pillarExtend.
+   *
+   * Reuses extendPillarZ/extendStoneZ as-is (see core/deform.js) — no new
+   * deform code, just a second application of the same height-ramped Z push
+   * to a different, named set of parts. Same amount-ramp pattern as the
+   * other carat corrections: 0 at/above belowCarat, full strength at the
+   * carat floor.
+   */
+  const bandLift = profile.head.bandLift ?? null;
+  const bandLiftAmount = bandLift
+    ? Math.max(0, Math.min(1,
+        (bandLift.belowCarat - carat) / (bandLift.belowCarat - caratFloor)))
+    : 0;
+
+  /**
+   * BAND LIFT (BOTTOM) — same mechanism as bandLift above, aimed at the
+   * OPPOSITE side of the band: the plain shank arc furthest from the head,
+   * where its two halves meet at the ring's lowest point. Independent parts
+   * list, independent fromZ/toZ/liftMM — tune without touching bandLift.
+   *
+   * Gating is a HARD on/off, not a ramp: `atCarat` (only active at that
+   * exact carat — this is a specific-size fix, not a fade-in correction) AND
+   * `belowRingSize` (only active below that ring size) must both hold, if
+   * set. Omit either to drop that condition.
+   */
+  const bandLiftBottom = profile.head.bandLiftBottom ?? null;
+  const bandLiftBottomActive = !!bandLiftBottom
+    && (bandLiftBottom.atCarat == null || Math.abs(carat - bandLiftBottom.atCarat) < 1e-6)
+    && (bandLiftBottom.belowRingSize == null || ringSize < bandLiftBottom.belowRingSize);
+  const bandLiftBottomAmount = bandLiftBottomActive ? 1 : 0;
+
+  /**
+   * BORE GUARD — protects the finger-hole surface from bandLift/
+   * bandLiftBottom/shoulderHinge above. Those all reshape a NAMED PART
+   * wholesale, but a part like the plain band is modelled as one continuous
+   * shell running from the bore surface (touching the finger) out to its
+   * decorated face — pushing/rotating the whole thing drags the bore along
+   * with it and turns a circular finger hole oval. Opt-in per ring via
+   * `profile.head.boreGuard` (only pear sets this so far) — every other
+   * ring's deform calls omit it and are completely unaffected.
+   */
+  const boreGuardCfg = profile.head.boreGuard
+    ? {
+        x: profile.master.boreCenter?.x ?? 0,
+        z: boreZ,
+        radius: profile.master.boreRadius,
+        rampMM: profile.head.boreGuard.rampMM ?? 0.3,
+      }
+    : null;
 
   // --- RING SIZE + WIDTH: deform the shank --------------------------------
   // Runs only when a shank parameter changes, not every frame. Both
@@ -494,6 +667,35 @@ export default function Ring({ profile, config }) {
     const fromSize = profile.head.pillarThickenFromSize ?? profile.master.ringSize;
     const sizeSteps = Math.max(0, (ringSize - fromSize) / RING_SIZE.STEP);
     const thickenMM = (profile.head.pillarThickenMM ?? 0) + perSize * sizeSteps;
+
+    /**
+     * PILLAR STRETCH — an alternative to the pillar bend above, ramped over
+     * a much wider height span (see stretchPillarToHead in core/deform.js).
+     * Explicit opt-in, same as pillarBend, via profile.head.pillarStretch —
+     * used where the bend's narrow ramp squeezed/stretched a pavé row too
+     * abruptly and distorted its settings; spreading the SAME kind of
+     * correction from `pillarStretchFromZ` (an anchor — nothing at or below
+     * it moves) to `pillarStretchToZ` (where it reaches deformHead's own
+     * formula in full, matching the head exactly) reads as a smooth taper
+     * instead of a kink. Runs at every carat: it is 0 at the master by
+     * construction (scale = 1 there), same as the bend.
+     */
+    const pillarStretch = profile.head.pillarStretch === true;
+    const stretchFromZ = profile.head.pillarStretchFromZ;
+    const stretchToZ = profile.head.pillarStretchToZ;
+    const stretchEasePower = profile.head.pillarStretchEasePower ?? 4;
+    /**
+     * Parts the stretch must NOT touch. It selects purely by height (a smooth
+     * ramp from stretchFromZ to stretchToZ), which also catches structures
+     * that reach partway into that band without needing to travel all the
+     * way to stretchToZ themselves — a smooth inner rail that welds right at
+     * the seat, say, rather than the outer pillar that actually needs to
+     * travel all the way up to meet the head at its far tip. Naming them
+     * here keeps them tracking only their own natural (near-zero, since the
+     * head itself barely moves right at the seat) position, instead of
+     * overshooting past where the head actually is.
+     */
+    const stretchSkip = profile.head.pillarStretchSkipParts ?? [];
 
     /**
      * RIGID-ABOVE-SIZE PARTS — small details that ride the shank but must not
@@ -578,6 +780,15 @@ export default function Ring({ profile, config }) {
     }
 
     for (const p of shankParts) {
+      /**
+       * The arch filler has no `base` shape of its own — every one of its
+       * vertices is DERIVED from other parts' finished results (see
+       * updateArchFiller, run in a second pass below, after this loop has
+       * written everyone else's target array for this render). Nothing here
+       * applies to it.
+       */
+      if (p.isArchFiller) continue;
+
       const attr = p.geometry.attributes.position;
       const target = attr.array;
 
@@ -622,6 +833,10 @@ export default function Ring({ profile, config }) {
             holdScale, holdFullZ
           );
         }
+
+        if (pillarStretch && !stretchSkip.includes(p.name)) {
+          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale, stretchEasePower);
+        }
       } else if (p.isStone) {
         // Stones ignore widthScale — they keep their size and stay centred
         // on Y = 0 however wide the band gets.
@@ -651,6 +866,10 @@ export default function Ring({ profile, config }) {
             target, p.centroid, seat, full, caratScale, bendFromZ, bulgeMM,
             holdScale, holdFullZ
           );
+        }
+
+        if (pillarStretch && !stretchSkip.includes(p.name)) {
+          stretchStoneToHead(target, p.centroid, seat, stretchFromZ, stretchToZ, caratScale, stretchEasePower);
         }
       } else {
         deformMetal(p.base, target, delta, widthScale, boreZ);
@@ -686,6 +905,10 @@ export default function Ring({ profile, config }) {
             holdScale, holdFullZ, thickenMM, boreZ
           );
         }
+
+        if (pillarStretch && !stretchSkip.includes(p.name)) {
+          stretchPillarToHead(p.base, target, seat, stretchFromZ, stretchToZ, caratScale, stretchEasePower);
+        }
       }
 
       /**
@@ -704,14 +927,17 @@ export default function Ring({ profile, config }) {
        * nothing changes, so the bore and band are untouched. See
        * blendShankToHead in core/deform.js.
        */
-      blendShankToHead(
-        p.base, target, delta, boreZ, headOffset.x, headOffset.z,
-        blendFromZ, blendFullZ,
-        // Frozen parts take the rigid path too — the blend is another
-        // per-vertex radial transform, so letting it run normally would
-        // reshape exactly what the freeze is protecting.
-        (p.isStone || keepRigid) ? p.centroid : null
-      );
+      if (!blendSkipParts.includes(p.name) && !(blendOnlyShrinking && delta > 0)) {
+        blendShankToHead(
+          p.base, target, delta, boreZ, headOffset.x, headOffset.z,
+          blendFromZ, blendFullZ,
+          // Frozen parts take the rigid path too — the blend is another
+          // per-vertex radial transform, so letting it run normally would
+          // reshape exactly what the freeze is protecting.
+          (p.isStone || keepRigid) ? p.centroid : null,
+          boreGuardCfg
+        );
+      }
 
       /**
        * At small carats the head shrinks away from the shoulder tips, so the
@@ -732,12 +958,75 @@ export default function Ring({ profile, config }) {
         );
       }
 
+      if (extend && extendAmount > 0 && !extend.excludeParts?.includes(p.name)) {
+        // Both stages scale by extendAmount, so at extendAmount = 0 (every
+        // carat at or above belowCarat) this whole block is a no-op and the
+        // mesh renders exactly as shipped — the earlier version left this
+        // running unconditionally, which is what needed fixing.
+        const stretchMM = (extend.extendMM ?? 0) * extendAmount;
+
+        // Stage 1: stretch/compact. Reads from p.base (pristine), matching
+        // how every other per-vertex deformer here decides its ramp weight.
+        if (p.isStone) {
+          extendStoneZ(target, p.centroid, extend.fromZ, extend.toZ, stretchMM);
+        } else {
+          extendPillarZ(p.base, target, extend.fromZ, extend.toZ, stretchMM);
+        }
+
+        // Stage 2: bend the reshaped section toward the head. `extendAmount`
+        // is passed as rotateShoulderTip's own `amount` (same as hinge/bend
+        // above), not pre-multiplied into the angle — it already scales the
+        // angle internally.
+        if (extend.bendPivotZ != null) {
+          let rigidAt = null;
+          if (p.isStone) {
+            let cx = 0, cy = 0, cz = 0;
+            const n = target.length / 3;
+            for (let i = 0; i < target.length; i += 3) {
+              cx += target[i]; cy += target[i + 1]; cz += target[i + 2];
+            }
+            rigidAt = { x: cx / n, y: cy / n, z: cz / n };
+          }
+          rotateShoulderTip(
+            target, extendAmount, extend.bendPivotXAbs, extend.bendPivotZ + delta,
+            extend.bendAngleDeg ?? 0, rigidAt
+          );
+        }
+      }
+
+      if (bandLift && bandLiftAmount > 0 && bandLift.parts?.includes(p.name)) {
+        // Independent of `extend` above — different parts, own fromZ/toZ,
+        // own amount. Plain up/down push: positive liftMM raises the band's
+        // top, negative lowers it.
+        const liftMM = (bandLift.liftMM ?? 0) * bandLiftAmount;
+        if (p.isStone) {
+          extendStoneZ(target, p.centroid, bandLift.fromZ, bandLift.toZ, liftMM);
+        } else {
+          extendPillarZ(p.base, target, bandLift.fromZ, bandLift.toZ, liftMM, boreGuardCfg);
+        }
+      }
+
+      if (bandLiftBottom && bandLiftBottomAmount > 0 && !p.isStone
+          && bandLiftBottom.parts?.includes(p.name)) {
+        // Same idea as bandLift, mirrored to the band's bottom arc (opposite
+        // the head): its "untouched" boundary (the equator) sits ABOVE the
+        // affected tip in Z, the reverse of bandLift, so this ramps toward
+        // toZ going DOWN instead of up. One pass covers the Z push plus the
+        // new X/Y position and radial-thickness knobs, all on the same ramp.
+        shiftPillarBelow(
+          p.base, target, bandLiftBottom.fromZ, bandLiftBottom.toZ,
+          bandLiftBottom.offsetX ?? 0, bandLiftBottom.offsetY ?? 0,
+          bandLiftBottom.liftMM ?? 0, bandLiftBottom.thickenMM ?? 0,
+          profile.master.boreCenter?.x ?? 0, boreZ, boreGuardCfg
+        );
+      }
+
       if (hinge && !hinge.excludeParts?.includes(p.name)) {
         // Centroid AFTER the size/width pass, matching bend's seatAt above.
         const rigidAt = p.isStone ? centroidOf(target) : null;
         rotateShoulderTip(
           target, hingeAmount, hinge.pivotXAbs, hinge.pivotZ + delta,
-          hinge.maxAngleDeg, rigidAt, hinge.easeZ ?? 0
+          hinge.maxAngleDeg, rigidAt, hinge.easeZ ?? 0, p.base, boreGuardCfg
         );
 
         /**
@@ -942,10 +1231,24 @@ export default function Ring({ profile, config }) {
       }
       p.geometry.computeBoundingSphere();
     }
+
+    /**
+     * SECOND PASS — the arch filler. Must come after the loop above: it
+     * measures the belowParts/aboveParts target arrays that loop just
+     * finished writing, so it always bridges whatever gap exists for THIS
+     * render's carat/ring-size/profile settings, rather than a shape fixed
+     * at load time.
+     */
+    if (profile.head.archFiller) {
+      const filler = shankParts.find((p) => p.isArchFiller);
+      if (filler) updateArchFiller(filler, shankParts, profile.head.archFiller);
+    }
   }, [shankParts, delta, ringSize, shankWidth, carat, profile, boreZ,
-      headOffset, blendFromZ, blendFullZ, slideDirs, accentSlideSet,
+      headOffset, blendFromZ, blendFullZ, blendSkipParts, blendOnlyShrinking,
+      slideDirs, accentSlideSet,
       bend, bendAmount, hinge, hingeAmount, drop, dropMM, dropRamp,
-      rigidDropStones]);
+      rigidDropStones, extend, extendAmount,
+      bandLift, bandLiftAmount, bandLiftBottom, bandLiftBottomAmount, boreGuardCfg]);
 
   // --- CARAT: deform the head ---------------------------------------------
   /**

@@ -133,9 +133,21 @@ export function deformStoneRigid(base, target, centroid, delta, boreCenterZ = 0)
  * @param {number} fromZ         height where the blend starts easing in
  * @param {number} fullZ         height at which it reaches the head's offset
  * @param {{x:number,z:number}|null} [rigidAt]  stone centroid, or null for metal
+ * @param {{x:number,z:number,radius:number,rampMM?:number}} [boreGuard]
+ *   Optional, metal path only. This function is meant to leave the bore
+ *   untouched below `fromZ` (see above) — but `fromZ` is a single height
+ *   shared by every part in the shank, and on some rings it has to sit low
+ *   enough to cover a shoulder rail that DOES need this correction, which
+ *   then also pulls in the band's own bore-facing vertices at that same
+ *   height even though the bore has nothing to do with the head. When set,
+ *   blends each vertex's correction to ZERO as its PRISTINE distance from
+ *   (boreGuard.x, boreGuard.z) approaches boreGuard.radius, ramping to full
+ *   effect over `rampMM` (default 0.3) — so the true bore surface keeps its
+ *   own radial offset exactly, at every ring size, regardless of `fromZ`.
  */
 export function blendShankToHead(
-  base, target, delta, boreCenterZ, headOffX, headOffZ, fromZ, fullZ, rigidAt = null
+  base, target, delta, boreCenterZ, headOffX, headOffZ, fromZ, fullZ, rigidAt = null,
+  boreGuard = null,
 ) {
   const span = fullZ - fromZ;
   const smoothstep = (t) => t * t * (3 - 2 * t);
@@ -170,7 +182,13 @@ export function blendShankToHead(
   for (let i = 0; i < base.length; i += 3) {
     const z = base[i + 2];
     if (z <= fromZ) continue;
-    const w = span <= 0 ? 1 : smoothstep(Math.min(1, (z - fromZ) / span));
+    let w = span <= 0 ? 1 : smoothstep(Math.min(1, (z - fromZ) / span));
+    if (boreGuard) {
+      const r = Math.hypot(base[i] - boreGuard.x, z - boreGuard.z);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      w *= smoothstep(rt);
+      if (w <= 0) continue;
+    }
     const [ox, oz] = ownOffset(base[i], z);
     target[i] += (headOffX - ox) * w;
     // Y is the band-width axis and must stay independent of ring size.
@@ -533,6 +551,144 @@ export function bendShoulders(
 }
 
 /**
+ * Stretch the shoulder's reach UPWARD, toward the head, without adding any
+ * new geometry.
+ *
+ * "Make the pillar longer" sounds like it needs new material welded onto the
+ * tip, but every shoulder mesh in this catalogue is a single CLOSED solid
+ * (measured on the pear: object_1 is 4868 verts / 19590 indices, capped at
+ * the tip, not an open shell with a rim to extrude from). Cutting one open
+ * and stitching in new topology blind — no way to render and check the
+ * result here — risks a torn or inside-out mesh that has no visible symptom
+ * until someone opens it in a viewer.
+ *
+ * This gets the same visual result a different way: pure Z motion, so it
+ * cannot thin the pillar. Every vertex keeps its own (x, y) exactly — only
+ * its height changes — so a cross-section's shape at a given moment in the
+ * stretch is identical to its pristine shape, just relocated. Below `fromZ`
+ * nothing moves (still welded to the rest of the shoulder). Between `fromZ`
+ * and `toZ` the extra height ramps in with a smoothstep. At and above `toZ`
+ * every vertex gets the full `extendMM` — a rigid cap riding up as one piece,
+ * so the tip's own shape is exactly preserved, just moved.
+ *
+ * Intended to run BEFORE rotateShoulderTip() in the same pass, so the hinge
+ * then bends the newly-extended reach rather than the original one.
+ *
+ * @param {Float32Array} base    pristine shank-metal positions
+ * @param {Float32Array} target  buffer to modify IN PLACE (already size/width deformed)
+ * @param {number} fromZ         height below which nothing moves
+ * @param {number} toZ           height at which the full extension is reached
+ * @param {number} extendMM      how far the tip moves up, in mm
+ * @param {{x:number,z:number,radius:number,rampMM?:number}} [boreGuard]
+ *   Optional. Parts like a plain band mesh in one piece from the bore
+ *   surface (where it touches the finger) all the way out to its decorated
+ *   face, so a Z push here would drag the bore surface along with it and
+ *   turn a circular finger hole oval. When set, vertices at/near
+ *   `boreGuard.radius` from (boreGuard.x, boreGuard.z) — measured on the
+ *   PRISTINE base, so the classification holds at every ring size — get
+ *   zero effect, ramping smoothly (over `rampMM`, default 0.3) up to full
+ *   effect only once clear of the bore. Omit for the old, unguarded
+ *   behaviour (every other existing caller).
+ */
+export function extendPillarZ(base, target, fromZ, toZ, extendMM, boreGuard = null) {
+  if (!extendMM) return;
+  const span = toZ - fromZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z <= fromZ) continue;
+    const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+    let w = smoothstep(t);
+    if (boreGuard) {
+      const r = Math.hypot(base[i] - boreGuard.x, base[i + 2] - boreGuard.z);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      w *= smoothstep(rt);
+      if (w <= 0) continue;
+    }
+    target[i + 2] += extendMM * w;
+  }
+}
+
+/**
+ * Rigid counterpart of extendPillarZ() for shank ACCENT STONES — the same
+ * upward stretch, but evaluated once at the stone's centroid and applied as
+ * one translation, so a stone never gets reshaped by it (only ever moved).
+ *
+ * @param {Float32Array} target    buffer already written by deformStoneRigid
+ * @param {{z:number}} centroid    stone centroid in pristine model space
+ * @param {number} fromZ
+ * @param {number} toZ
+ * @param {number} extendMM
+ */
+export function extendStoneZ(target, centroid, fromZ, toZ, extendMM) {
+  if (!extendMM) return;
+  const z = centroid.z;
+  if (z <= fromZ) return;
+  const span = toZ - fromZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+  const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+  const dz = extendMM * smoothstep(t);
+
+  for (let i = 0; i < target.length; i += 3) target[i + 2] += dz;
+}
+
+/**
+ * General-purpose version of extendPillarZ(), mirrored for parts BELOW a
+ * threshold instead of above one — e.g. the bottom of a band's arc, where
+ * "further from the threshold" means more negative Z, not more positive.
+ * Able to push a vertex in any of X/Y/Z, AND/OR thicken the wall radially
+ * (away from/toward the bore axis in the XZ plane) in the same pass — one
+ * weight, four independent knobs, so combining them never introduces a seam
+ * of its own.
+ *
+ * @param {Float32Array} base    pristine positions
+ * @param {Float32Array} target  buffer to modify IN PLACE
+ * @param {number} fromZ         height above which nothing moves
+ * @param {number} toZ           height (BELOW fromZ) at which full effect is reached
+ * @param {number} dx            plain X shift at full effect, mm
+ * @param {number} dy            plain Y shift at full effect, mm
+ * @param {number} dz            plain Z shift at full effect, mm
+ * @param {number} thickenMM     radial push at full effect: + outward (away
+ *                               from the bore axis, thicker wall), - inward
+ * @param {number} boreX         bore axis X (for the radial direction)
+ * @param {number} boreZ         bore axis Z (for the radial direction)
+ * @param {{radius:number,rampMM?:number}} [boreGuard]
+ *   Optional. Same idea as extendPillarZ's boreGuard: zeroes the effect on
+ *   vertices at/near `boreGuard.radius` from (boreX, boreZ) — the true bore
+ *   surface, measured on the pristine base — ramping to full effect over
+ *   `rampMM` (default 0.3) once clear of it, so this can never turn a
+ *   circular finger hole oval. Omit for the old, unguarded behaviour.
+ */
+export function shiftPillarBelow(base, target, fromZ, toZ, dx, dy, dz, thickenMM, boreX, boreZ, boreGuard = null) {
+  if (!dx && !dy && !dz && !thickenMM) return;
+  const span = fromZ - toZ;
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z >= fromZ) continue;
+    const t = span <= 0 ? 1 : Math.min(1, (fromZ - z) / span);
+    let w = smoothstep(t);
+    if (boreGuard) {
+      const r = Math.hypot(base[i] - boreX, base[i + 2] - boreZ);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      w *= smoothstep(rt);
+      if (w <= 0) continue;
+    }
+    if (dx) target[i] += dx * w;
+    if (dy) target[i + 1] += dy * w;
+    if (dz) target[i + 2] += dz * w;
+    if (thickenMM) {
+      const vx = base[i] - boreX, vz = base[i + 2] - boreZ;
+      const r = Math.hypot(vx, vz) || 1;
+      target[i] += (vx / r) * thickenMM * w;
+      target[i + 2] += (vz / r) * thickenMM * w;
+    }
+  }
+}
+
+/**
  * Rotate the shoulder tip RIGIDLY about a fixed pivot, as an alternative to
  * bendShoulders() above.
  *
@@ -572,9 +728,20 @@ export function bendShoulders(
  * @param {number} [easeZ]  height above pivotZ over which the angle ramps from
  *   0 to full, so the bend reads as a curve rather than a creased corner.
  *   0 (default) = the original instant hinge.
+ * @param {Float32Array} [guardBase]  pristine positions, required if boreGuard is set
+ * @param {{x:number,z:number,radius:number,rampMM?:number}} [boreGuard]
+ *   Optional, metal path only. Same idea as extendPillarZ's boreGuard: a
+ *   part can include a stretch of the true bore surface among the vertices
+ *   this rotation would otherwise sweep — e.g. shoulder shells that reach
+ *   all the way down to where they're welded to the band. Blends each
+ *   vertex smoothly between its un-rotated and rotated position based on
+ *   its PRISTINE distance from (boreGuard.x, boreGuard.z): 0% at/inside
+ *   `boreGuard.radius`, ramping to 100% over `rampMM` (default 0.3) — so
+ *   the finger-hole surface itself never leaves its circular shape.
  */
 export function rotateShoulderTip(
-  target, amount, pivotXAbs, pivotZ, maxAngleDeg, rigidAt = null, easeZ = 0
+  target, amount, pivotXAbs, pivotZ, maxAngleDeg, rigidAt = null, easeZ = 0,
+  guardBase = null, boreGuard = null,
 ) {
   if (amount <= 0) return;
   const angle = (maxAngleDeg * Math.PI / 180) * amount;
@@ -652,8 +819,17 @@ export function rotateShoulderTip(
     const z = target[i + 2];
     if (z <= pivotZ) continue;
     const [nx, nz] = rotate(target[i], z);
-    target[i] = nx;
-    target[i + 2] = nz;
+    if (guardBase && boreGuard) {
+      const r = Math.hypot(guardBase[i] - boreGuard.x, guardBase[i + 2] - boreGuard.z);
+      const rt = Math.max(0, Math.min(1, (r - boreGuard.radius) / (boreGuard.rampMM ?? 0.3)));
+      const w = smoothstep(rt);
+      if (w <= 0) continue;
+      target[i] += (nx - target[i]) * w;
+      target[i + 2] += (nz - target[i + 2]) * w;
+    } else {
+      target[i] = nx;
+      target[i + 2] = nz;
+    }
   }
 }
 
@@ -916,6 +1092,190 @@ export function bendStoneToHead(
   }
 }
 
+/**
+ * Build a small solid, tapered box from scratch — used to plug a gap that
+ * only exists because of a profile's OWN custom shoulder adjustments
+ * (shoulderHinge / pillarExtend / bandLift), not something present in any
+ * shipped GLB. There is nothing to extrude from for a gap like that; it has
+ * to be authored as new geometry.
+ *
+ * A box, not a organic patch, because it can be verified by construction: 6
+ * flat quads, checked here to have outward-facing normals (see the winding
+ * comment below), so there is no risk of an inside-out face no matter how
+ * the profile's dimensions are set. That trades sculptural elegance for
+ * certainty that it will render as a solid, lit correctly, filled shape —
+ * the right trade when nobody can view-and-adjust it live.
+ *
+ * Bottom face is centred at (offsetX, 0, baseZ), sized baseWidthX x
+ * baseWidthY. Top face is centred at (offsetX, 0, topZ), sized topWidthX x
+ * topWidthY — independent width/depth top and bottom, so it can taper
+ * (typically narrower at the top, echoing the band's own peak just below
+ * it) or stay a plain prism if top and bottom are set equal.
+ *
+ * @param {object} opts
+ * @param {number} opts.baseWidthX
+ * @param {number} opts.baseWidthY
+ * @param {number} opts.topWidthX
+ * @param {number} opts.topWidthY
+ * @param {number} opts.baseZ
+ * @param {number} opts.topZ
+ * @param {number} [opts.offsetX] X of the box's centre line; 0 = ring axis
+ * @returns {{positions: Float32Array, indices: Uint16Array}}
+ */
+export function buildFillerBox({
+  baseWidthX, baseWidthY, topWidthX, topWidthY, baseZ, topZ, offsetX = 0,
+}) {
+  const bx = baseWidthX / 2, by = baseWidthY / 2;
+  const tx = topWidthX / 2, ty = topWidthY / 2;
+
+  // 8 corners: 0-3 at baseZ (bottom), 4-7 at topZ (top), each ring going
+  // -X-Y, +X-Y, +X+Y, -X+Y.
+  const positions = new Float32Array([
+    -bx + offsetX, -by, baseZ,   bx + offsetX, -by, baseZ,
+     bx + offsetX,  by, baseZ,  -bx + offsetX,  by, baseZ,
+    -tx + offsetX, -ty, topZ,    tx + offsetX, -ty, topZ,
+     tx + offsetX,  ty, topZ,   -tx + offsetX,  ty, topZ,
+  ]);
+
+  /**
+   * Each face as a quad [a,b,c,d], split (a,b,c)(a,c,d). Winding verified
+   * numerically (each face's cross-product normal dotted against the
+   * direction from the box centre to the face centre, all six positive —
+   * i.e. every face point outward) rather than by hand, since hand-deriving
+   * six windings is exactly the kind of thing that silently produces one
+   * inside-out face.
+   */
+  const quads = [
+    [0, 3, 2, 1], // bottom, -Z
+    [4, 5, 6, 7], // top, +Z
+    [0, 1, 5, 4], // front, -Y
+    [3, 7, 6, 2], // back, +Y
+    [0, 4, 7, 3], // left, -X
+    [1, 2, 6, 5], // right, +X
+  ];
+  const indices = new Uint16Array(quads.length * 6);
+  let k = 0;
+  for (const [a, b, c, d] of quads) {
+    indices[k++] = a; indices[k++] = b; indices[k++] = c;
+    indices[k++] = a; indices[k++] = c; indices[k++] = d;
+  }
+
+  return { positions, indices };
+}
+
+/**
+ * FIXED TOPOLOGY for a self-measuring bridge across an arbitrarily-shaped
+ * gap: N cross-sections along X, each a vertical wall from the surface
+ * below to the surface above, swept into one continuous solid. Unlike
+ * buildFillerBox (one box, hand-set dimensions), this is meant to be
+ * measured against the ACTUAL current geometry every time it is drawn — see
+ * sampleArchFillerPositions below — so it keeps fitting even if the
+ * shoulder settings it is bridging (shoulderHinge / pillarExtend / bandLift)
+ * get retuned later.
+ *
+ * The INDEX buffer never changes (same N slices, same wall structure every
+ * time), only the vertex POSITIONS get resampled per render — see
+ * sampleArchFillerPositions. That split is what makes updating this cheap:
+ * rebuild positions on every carat/ring-size change, but the topology (and
+ * its verified winding) is computed once.
+ *
+ * 4 vertices per slice: bottom-front, bottom-back, top-front, top-back
+ * (front/back being the two faces along Y, the ring's thin axis). Faces:
+ * front wall, back wall, top wall, bottom wall (each a strip of quads
+ * between adjacent slices), plus two end caps closing the first and last
+ * slice into a solid.
+ *
+ * @param {number} n  number of X slices (n >= 2)
+ * @returns {Uint16Array} index buffer, verified below for outward winding
+ */
+export function buildArchFillerTopology(n) {
+  const BF = 0, BB = 1, TF = 2, TB = 3; // per-slice vertex roles
+  const vi = (slice, role) => slice * 4 + role;
+  const quads = [];
+
+  for (let s = 0; s < n - 1; s++) {
+    // front wall (-Y face): looking from -Y, CCW is BF(s), BF(s+1), TF(s+1), TF(s)
+    quads.push([vi(s, BF), vi(s + 1, BF), vi(s + 1, TF), vi(s, TF)]);
+    // back wall (+Y face): reversed sense relative to front
+    quads.push([vi(s, BB), vi(s, TB), vi(s + 1, TB), vi(s + 1, BB)]);
+    // top wall (+Z-ish face, the underside of the pillar/head)
+    quads.push([vi(s, TF), vi(s + 1, TF), vi(s + 1, TB), vi(s, TB)]);
+    // bottom wall (-Z-ish face, resting on the band)
+    quads.push([vi(s, BF), vi(s, BB), vi(s + 1, BB), vi(s + 1, BF)]);
+  }
+  // end caps, one at each extreme slice, closing the solid
+  quads.push([vi(0, BF), vi(0, TF), vi(0, TB), vi(0, BB)]);
+  quads.push([vi(n - 1, BF), vi(n - 1, BB), vi(n - 1, TB), vi(n - 1, TF)]);
+
+  const indices = new Uint16Array(quads.length * 6);
+  let k = 0;
+  for (const [a, b, c, d] of quads) {
+    indices[k++] = a; indices[k++] = b; indices[k++] = c;
+    indices[k++] = a; indices[k++] = c; indices[k++] = d;
+  }
+  return indices;
+}
+
+/**
+ * Fill the POSITIONS for buildArchFillerTopology's fixed index buffer, by
+ * measuring the actual gap between two already-deformed part groups at
+ * render time — this is what makes the bridge self-fitting instead of a
+ * hand-set shape.
+ *
+ * For each of `n` evenly-spaced X values across [xMin, xMax]: the BOTTOM
+ * surface's height is the highest Z any `belowParts` vertex reaches within
+ * `xToleranceMM` of that X; the TOP surface's height is the lowest Z any
+ * `aboveParts` vertex reaches there. Where the two are already touching or
+ * overlapping (top <= bottom — the real shoulder contact, outside the gap),
+ * the slice collapses to zero height, so the bridge only has material where
+ * a real gap exists and tapers to nothing at its own edges by construction.
+ *
+ * @param {number} n                  slice count, must match the topology's n
+ * @param {number} xMin
+ * @param {number} xMax
+ * @param {number} xToleranceMM       how wide an X band counts as "at this slice"
+ * @param {number} halfWidthY         half the bridge's Y width (its face-to-face span)
+ * @param {Array<{name:string, target:Float32Array}>} belowParts  e.g. the band
+ * @param {Array<{name:string, target:Float32Array}>} aboveParts  e.g. the pillar
+ * @returns {Float32Array} positions, ready for buildArchFillerTopology(n)'s indices
+ */
+export function sampleArchFillerPositions(
+  n, xMin, xMax, xToleranceMM, halfWidthY, belowParts, aboveParts
+) {
+  const positions = new Float32Array(n * 4 * 3);
+  const step = n > 1 ? (xMax - xMin) / (n - 1) : 0;
+
+  const extremeAt = (parts, x, wantMax) => {
+    let best = wantMax ? -Infinity : Infinity;
+    let found = false;
+    for (const { target } of parts) {
+      for (let i = 0; i < target.length; i += 3) {
+        if (Math.abs(target[i] - x) > xToleranceMM) continue;
+        const z = target[i + 2];
+        if (wantMax ? z > best : z < best) { best = z; found = true; }
+      }
+    }
+    return found ? best : null;
+  };
+
+  for (let s = 0; s < n; s++) {
+    const x = xMin + step * s;
+    const bottomZ = extremeAt(belowParts, x, true);
+    const topZRaw = extremeAt(aboveParts, x, false);
+    // No data at this X for either surface (outside both parts' extent):
+    // collapse to a zero-height sliver at whichever Z is known, or 0.
+    const bZ = bottomZ ?? topZRaw ?? 0;
+    const tZ = topZRaw != null && topZRaw > bZ ? topZRaw : bZ;
+
+    const o = s * 4 * 3;
+    positions[o + 0] = x; positions[o + 1] = -halfWidthY; positions[o + 2] = bZ;  // BF
+    positions[o + 3] = x; positions[o + 4] =  halfWidthY; positions[o + 5] = bZ;  // BB
+    positions[o + 6] = x; positions[o + 7] = -halfWidthY; positions[o + 8] = tZ;  // TF
+    positions[o + 9] = x; positions[o + 10] = halfWidthY; positions[o + 11] = tZ; // TB
+  }
+  return positions;
+}
+
 /** Centroid of a position buffer, in the XZ plane. */
 export function centroidXZ(pos) {
   let sx = 0;
@@ -1045,4 +1405,71 @@ export function fixMirroredStone(geometry) {
   if (signedVolume(pos, index) >= 0) return false;
   reverseWinding(index, normal);
   return true;
+}
+
+/**
+ * PILLAR STRETCH — an alternative to bendPillarToHead, ramped over a much
+ * wider height span so a pillar carrying a full pavé row down its length
+ * tapers smoothly instead of kinking where the ramp starts.
+ *
+ * @param {Float32Array} base    pristine shank-metal positions
+ * @param {Float32Array} target  buffer to modify IN PLACE (already size/width deformed)
+ * @param {number} seatZ     the height carat scaling pivots on (deformHead's own anchor)
+ * @param {number} fromZ     height below which nothing moves
+ * @param {number} toZ       height at which the Z stretch reaches deformHead's
+ *   own unconditional Z formula in full — e.g. the pillar's own top, where
+ *   it welds to the head
+ * @param {number} scale    carat linear scale, same value passed to deformHead
+ * @param {number} [easePower] shape of the ramp from `fromZ` to `toZ` — see
+ *   above. Higher values track the pristine taper more closely through the
+ *   middle but concentrate the correction into a shorter stretch right
+ *   before `toZ`; lower values spread it more evenly but risk flattening
+ *   the taper (the bulge this was built to fix). Default 4, the value
+ *   measured (per-ring, see the profile using this) to have zero local
+ *   widening anywhere along the pillar.
+ */
+export function stretchPillarToHead(base, target, seatZ, fromZ, toZ, scale, easePower = 4) {
+  const totalStretchZ = (toZ - seatZ) * (scale - 1);
+  const span = toZ - fromZ;
+
+  for (let i = 0; i < base.length; i += 3) {
+    const z = base[i + 2];
+    if (z <= fromZ) continue;
+    const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+    const w = Math.pow(t, easePower);
+    target[i + 2] += totalStretchZ * w;
+    target[i] += base[i] * (scale - 1) * w;
+  }
+}
+
+/**
+ * Rigid counterpart of stretchPillarToHead() for shank ACCENT STONES — moves
+ * the whole stone by the SAME rules (proportional X using its own centroid,
+ * fixed-total-fraction Z, same ease-in ramp shape), evaluated once at its
+ * centroid, so a stone higher up the pillar simply lands further from its
+ * neighbour below it (more space) and further out sideways, rather than
+ * being stretched itself.
+ *
+ * @param {Float32Array} target    buffer already written by deformStoneRigid
+ * @param {{x:number,z:number}} centroid    stone centroid in pristine model space
+ * @param {number} seatZ
+ * @param {number} fromZ
+ * @param {number} toZ
+ * @param {number} scale
+ * @param {number} [easePower]  see stretchPillarToHead; default 4
+ */
+export function stretchStoneToHead(target, centroid, seatZ, fromZ, toZ, scale, easePower = 4) {
+  const z = centroid.z;
+  if (z <= fromZ) return;
+  const totalStretchZ = (toZ - seatZ) * (scale - 1);
+  const span = toZ - fromZ;
+  const t = span <= 0 ? 1 : Math.min(1, (z - fromZ) / span);
+  const w = Math.pow(t, easePower);
+  const dz = totalStretchZ * w;
+  const dx = centroid.x * (scale - 1) * w;
+
+  for (let i = 0; i < target.length; i += 3) {
+    target[i] += dx;
+    target[i + 2] += dz;
+  }
 }

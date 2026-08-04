@@ -35,6 +35,9 @@ export default {
   subtitle: 'Pavé Shoulders',
   description: '18K · Natural Diamond',
 
+  /** No Band Width control for this ring — see Controls.jsx. */
+  hideBandWidth: true,
+
   /** Draco-compressed GLB, served from rings/clientobj2/models/. */
   models: {
     shank: 'shank.glb',
@@ -61,6 +64,10 @@ export default {
     /** Centre stone as modelled: 5.40 mm princess girdle = exactly 1.00 ct. */
     carat: 1.0,
     stoneMM: 5.40,
+
+    /** Restricted range for this ring: 1.00-3.00 ct only. */
+    caratMin: 1.00,
+    caratMax: 3.00,
 
     /**
      * Band width (Y span) at the bottom of the shank. The master is not a
@@ -135,6 +142,77 @@ export default {
 
     /** At or below this weight the master prongs dominate the stone. */
     minComfortableCarat: 0.375,
+
+    /**
+     * PILLAR STRETCH — keeps the shoulder pillars welded to the head as
+     * carat changes, instead of holding still while the head's basket/
+     * prongs grow or shrink around them (see stretchPillarToHead in
+     * core/deform.js).
+     *
+     * An earlier attempt used bendPillarToHead directly, which ramps the
+     * SAME kind of correction (X scale, Z stretch) over just seatZ..
+     * scaleFullAtZ (9.25-9.75, half a millimetre) — cramming up to 44% of
+     * scale change into that half-millimetre is what squeezed/stretched
+     * every pavé stone's own seat sideways, the settings visibly buckling
+     * apart from the metal that was reported. stretchPillarToHead applies
+     * the same X scale and Z stretch formulas but ramped over a much wider
+     * span (`pillarStretchFromZ` to `pillarStretchToZ` below, ~10 mm), which
+     * reads as a smooth taper instead of a kink. X is a genuine
+     * PROPORTIONAL scale (each vertex/stone's own x), not a fixed shift — an
+     * even earlier version added the same fixed offset to every vertex
+     * regardless of its own x, which bulged the middle of the cross-section
+     * outward (a vertex near the centre grew by a much larger fraction of
+     * its own small x than one already far out); see stretchPillarToHead's
+     * own comment in core/deform.js for the measured numbers.
+     *
+     * pillarStretchFromZ 2.50 anchors just below the LOWEST pavé stone on
+     * the pillar (measured bottom 2.827) — nothing at or below it moves, so
+     * the row's starting point never drifts. pillarStretchToZ 12.444 is the
+     * OUTER pillar's own measured top (object_4/8/9/10 — see
+     * pillarStretchSkipParts below for why object_6/7 are excluded), where
+     * it welds to the head — the stretch reaches deformHead's own Z formula
+     * in full exactly there, so the two always land on the same point
+     * regardless of carat, AND (since X is proportional) automatically
+     * matches the head's own sideways growth too, without a separate X
+     * parameter — verified against the actual measured touching pair (shank
+     * object_8's tip vs head object_5, the small basket bar the pillar tip
+     * nestles under) at every carat up to 3.00 ct. Runs at every carat above
+     * the 1.00 ct master (0 there by construction) — this ring's slider
+     * cannot go below it.
+     *
+     * pillarStretchSkipParts — object_6/object_7 ("shoulder, full
+     * cross-section") reach only up to Z 9.46, essentially AT the seat
+     * (9.25) — this is the smooth inner V-rail that welds right at the
+     * seat, not the outer pavé pillar reaching all the way to
+     * pillarStretchToZ. Applying the same stretch there overshot: at 9.46
+     * it is already 70% of the way through the fromZ..toZ ramp, so it
+     * picked up most of the FULL stretch (computed for the 12.444 tip)
+     * while the head's own metal barely moves that close to the seat by
+     * design (deformHead freezes Z at/below the seat) — measured, the
+     * V-notch rose to Z 10.52 at 3.00 ct while the head's matching point
+     * stayed at Z 9.44, reading as the shank rising up through the head's
+     * base. Excluding these two leaves them tracking only ring size, same
+     * as the plain lower band, matching how little the head itself moves
+     * this close to the seat.
+     *
+     * pillarStretchEasePower 4 — shape of the fromZ..toZ ramp (see
+     * stretchPillarToHead in core/deform.js): a plain linear/smoothstep ramp
+     * grows fastest through the pillar's own mid-height, exactly where the
+     * pristine cross-section is ALSO narrowing fastest (10.3mm near the
+     * band down to 2.5mm at the tip) — the two rates fighting flattened the
+     * taper out over an extended stretch, which is what read as the
+     * pillars bulging in the middle. Raising this to a power curve
+     * concentrates the correction into the last third or so of the ramp
+     * instead. 4 is the smallest power measured (per 0.5mm height bin, vs
+     * the pristine width) to give ZERO local widening anywhere on the
+     * pillar while still keeping the tip tracking the head's own landmark
+     * point tightly (gap stays under 0.14mm through 3.00 ct).
+     */
+    pillarStretch: true,
+    pillarStretchFromZ: 2.50,
+    pillarStretchToZ: 12.444,
+    pillarStretchSkipParts: ['object_6', 'object_7'],
+    pillarStretchEasePower: 4,
   },
 
   /**
