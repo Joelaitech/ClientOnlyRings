@@ -23,14 +23,13 @@ export default function Controls({
   profile, standards, configure, rings, onSelectRing, config, resolved, warnings, onChange,
 }) {
   // This ring's OWN copy of standards/configure — not a shared module.
-  const { RING_SIZE, CARAT, SHANK_WIDTH, METALS } = standards;
+  const { RING_SIZE, CARAT, METALS } = standards;
   const { defaultConfig } = configure;
-  const { ringSize, carat, shankWidth, metal } = config;
+  const { ringSize, carat, metal } = config;
 
   /** Per-ring carat bounds, falling back to the catalogue range. */
   const caratMin = profile.master.caratMin ?? CARAT.MIN;
   const caratMax = profile.master.caratMax ?? CARAT.MAX;
-  const master = profile.master;
 
   return (
     <aside className="panel">
@@ -90,27 +89,6 @@ export default function Controls({
             {resolved.shank.circumference.toFixed(1)} mm
           </span>
           <span>US {RING_SIZE.MAX}</span>
-        </div>
-      </Row>
-
-      {/* ---- SHANK WIDTH ---- */}
-      <Row label="Band Width" value={`${shankWidth.toFixed(2)} mm`}>
-        <input
-          type="range"
-          min={SHANK_WIDTH.MIN}
-          max={SHANK_WIDTH.MAX}
-          step={SHANK_WIDTH.STEP}
-          value={shankWidth}
-          onChange={(e) => onChange({ shankWidth: parseFloat(e.target.value) })}
-        />
-        <div className="scale">
-          <span>{SHANK_WIDTH.MIN} mm</span>
-          <span className="mid">
-            {shankWidth === master.shankWidthMM
-              ? 'As modelled'
-              : `${resolved.shank.widthScale.toFixed(2)}× master`}
-          </span>
-          <span>{SHANK_WIDTH.MAX} mm</span>
         </div>
       </Row>
 
